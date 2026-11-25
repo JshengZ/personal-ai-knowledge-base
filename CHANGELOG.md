@@ -12,6 +12,7 @@
 - Confirmed/pending/stale memory review, evidence-backed summaries, and portable knowledge backups excluding credentials.
 - Intel Mac DMG and Windows x64 installer, SHA-256 checksums, bilingual documentation, contribution templates, and CI.
 - Public builds remap machine-specific compiler paths and exclude local knowledge, credentials, and developer artifacts.
+- Normalize PDF.js resource paths for Windows font and WebAssembly loading.
 
 **Validation:** packaged Mac application tested with real local embeddings, PDF/OCR/XLSX, project filtering, MCP, and memory review. Windows installer is cross-built; target workstation, real organization API, and actual ZCode integration need acceptance in those environments. Installers are unsigned. Desktop UI is Simplified Chinese.
 
@@ -25,5 +26,6 @@
 - 记忆确认与复核、带证据项目摘要、排除凭据的知识备份。
 - Mac Intel / Windows x64 安装包、校验和、中英文文档、贡献模板与 CI。
 - 公开构建清理本机编译路径，不包含本地知识、凭据和开发数据。
+- 规范 PDF.js 字体与 WebAssembly 路径，修复 Windows PDF 解析。
 
 **验收范围：** Mac 打包应用已实测真实向量、PDF/OCR/XLSX、项目过滤、MCP 和记忆审核。Windows 安装包为交叉构建，目标电脑、真实公司 API 与 ZCode 客户端仍需实地验收。当前未签名，桌面界面为简体中文。

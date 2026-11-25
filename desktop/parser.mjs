@@ -328,8 +328,9 @@ async function parsePdf(bytes, options) {
     isEvalSupported: false,
     useSystemFonts: true,
     verbosity: 0,
-    standardFontDataUrl: join(distribution, "standard_fonts/"),
-    wasmUrl: join(distribution, "wasm/"),
+    standardFontDataUrl:
+      join(distribution, "standard_fonts").replaceAll("\\", "/") + "/",
+    wasmUrl: join(distribution, "wasm").replaceAll("\\", "/") + "/",
     useWorkerFetch: false,
   });
   let worker;
