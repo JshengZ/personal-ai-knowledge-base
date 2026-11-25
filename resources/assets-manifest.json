@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "model": {
+    "file": "resources/runtime/models/Qwen3-Embedding-0.6B-Q8_0.gguf",
+    "sha256": "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
+    "url": "https://modelscope.cn/models/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/master/Qwen3-Embedding-0.6B-Q8_0.gguf"
+  },
+  "llama_version": "b12711",
+  "runtimes": [
+    {
+      "platform": "mac-x64",
+      "archive": "llama-mac-x64.tar.gz",
+      "url": "https://api.github.com/repos/ggml-org/llama.cpp/releases/assets/789989365?download=1",
+      "sha256": "407ba426f33a63bd189116e296a939adf55e12c2ad3244abd27860aef0276400",
+      "binary": "llama-server"
+    },
+    {
+      "platform": "win-x64",
+      "archive": "llama-win-x64.zip",
+      "url": "https://api.github.com/repos/ggml-org/llama.cpp/releases/assets/789991286?download=1",
+      "sha256": "fd2408e502e1416de55f2759cc252dee23ce8d034cc7e4682a8cb6e5e2ddf1b8",
+      "binary": "llama-server.exe",
+      "custom_build": {
+        "version": "b12711",
+        "source_url": "https://github.com/ggml-org/llama.cpp/tree/b12711",
+        "source_sha256": "af27c3fd7b02c3bc492481513cd864892075ae4221dc45f3e0ac59ab27331723",
+        "binary_sha256": "4c131f2b29080251f39f97f3b4b1ea214b6659d52dddbfaab6237df2985e9c38",
+        "compiler": "Zig GNU, static C++ runtime",
+        "path_remapped": true,
+        "cpu": "x64 baseline",
+        "shared_libraries": false,
+        "openmp": false,
+        "openssl": false,
+        "local_changes": "Skip GUI application manifest for cross-built hidden embedding service."
+      }
+    }
+  ],
+  "ocr": {
+    "languages": [
+      "eng",
+      "chi_sim"
+    ],
+    "source": "@tesseract.js-data"
+  },
+  "font": "Noto Serif SC",
+  "icon": "Phosphor BookOpen thin"
+}

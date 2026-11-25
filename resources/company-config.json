@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "organization": "",
+  "chat": {"base_url": "", "model": "", "protocol": "openai"},
+  "embedding": {"base_url": "", "model": "", "mode": "auto"},
+  "rerank": {"base_url": "", "model": "", "enabled": false}
+}

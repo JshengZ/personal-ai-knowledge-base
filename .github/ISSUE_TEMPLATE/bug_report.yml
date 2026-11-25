@@ -1,0 +1,30 @@
+name: Bug report / 问题报告
+description: Report a reproducible problem using synthetic data / 使用虚构资料复现问题
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: "Do not include private documents, credentials, tokens, backups, or unredacted local paths. Security issues: use the Security tab. / 不要上传私密资料、凭据、令牌、备份或未脱敏路径；漏洞请使用 Security 私密报告。"
+  - type: input
+    id: version
+    attributes:
+      label: Version and platform / 版本与平台
+      placeholder: "1.0.0, Windows x64 / Intel macOS"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps and minimal synthetic example / 复现步骤与虚构示例
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior / 预期与实际行为
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostics or screenshots / 脱敏诊断与截图

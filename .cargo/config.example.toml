@@ -1,0 +1,9 @@
+# Optional build-time mirror. Copy to config.toml only when needed.
+# 可选构建镜像；有需要时复制为 config.toml，不包含运行时模型配置。
+# [source.crates-io]
+# replace-with = "rsproxy"
+# [source.rsproxy]
+# registry = "sparse+https://rsproxy.cn/index/"
+[http]
+multiplexing = false
+timeout = 60

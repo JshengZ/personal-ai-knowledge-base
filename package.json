@@ -1,0 +1,117 @@
+{
+  "name": "personal-knowledge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "本地个人知识库与 MCP 知识服务",
+  "author": "Personal Knowledge Contributors",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "desktop-dist/main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "vite --host 127.0.0.1",
+    "build:web": "tsc --noEmit && vite build",
+    "build:desktop": "node scripts/build-desktop.mjs",
+    "build:engine": "cargo build --manifest-path engine/Cargo.toml --release",
+    "build": "npm run build:web && npm run build:desktop && npm run build:engine",
+    "assets": "node scripts/prepare-assets.mjs",
+    "assets:win-runtime": "node scripts/build-windows-runtime.mjs",
+    "desktop": "node scripts/launch-desktop.mjs",
+    "dist:mac": "node scripts/package.mjs mac",
+    "dist:win": "node scripts/package.mjs win",
+    "check": "tsc --noEmit && cargo check --manifest-path engine/Cargo.toml",
+    "test": "cargo test --manifest-path engine/Cargo.toml && node --test tests/parser.test.mjs",
+    "test:integration": "node --test tests/integration.test.mjs"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "1.2.0",
+    "csv-parse": "^6.1.0",
+    "exceljs": "^4.4.0",
+    "fast-xml-parser": "^5.3.0",
+    "fflate": "^0.8.2",
+    "pdfjs-dist": "6.5.438",
+    "tesseract.js": "7.0.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@tesseract.js-data/chi_sim": "^1.0.0",
+    "@tesseract.js-data/eng": "^1.0.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^6.0.0",
+    "electron": "45.5.0",
+    "electron-builder": "^26.0.0",
+    "esbuild": "^0.28.0",
+    "pdf-lib": "^1.17.1",
+    "playwright": "^1.56.0",
+    "png-to-ico": "^3.0.2",
+    "prettier": "^3.10.1",
+    "typescript": "^5.9.0",
+    "vite": "8.3.8",
+    "@fontsource-variable/noto-serif-sc": "^5.3.1",
+    "@phosphor-icons/react": "2.1.10",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0"
+  },
+  "build": {
+    "appId": "local.personal.knowledge",
+    "productName": "个人知识库",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "desktop-dist/**",
+      "package.json",
+      "node_modules/**",
+      "licenses/**",
+      "LICENSE",
+      "THIRD-PARTY-NOTICES.md"
+    ],
+    "asarUnpack": [
+      "dist/**",
+      "desktop-dist/parser.mjs",
+      "node_modules/**"
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "signExecutable": false
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true
+    },
+    "publish": null
+  },
+  "overrides": {
+    "exceljs": {
+      "unzipper": "0.12.5"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JshengZ/personal-ai-knowledge-base.git"
+  },
+  "homepage": "https://github.com/JshengZ/personal-ai-knowledge-base#readme",
+  "bugs": {
+    "url": "https://github.com/JshengZ/personal-ai-knowledge-base/issues"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

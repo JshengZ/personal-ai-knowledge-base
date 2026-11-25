@@ -1,0 +1,634 @@
+use crate::types::*;
+use anyhow::{bail, Context, Result};
+use jieba_rs::Jieba;
+use rusqlite::{params, Connection as Sqlite, OptionalExtension};
+use serde::{de::DeserializeOwned, Serialize};
+use serde_json::{json, Value};
+use std::{collections::HashSet, path::Path, sync::Mutex, time::Duration};
+
+pub struct Store {
+    pub connection: Mutex<Sqlite>,
+    tokenizer: Jieba,
+}
+
+impl Store {
+    pub fn open(path: &Path) -> Result<Self> {
+        unsafe {
+            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
+                *const (),
+                unsafe extern "C" fn(
+                    *mut rusqlite::ffi::sqlite3,
+                    *mut *mut std::os::raw::c_char,
+                    *const rusqlite::ffi::sqlite3_api_routines,
+                ) -> std::os::raw::c_int,
+            >(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+        let connection = Sqlite::open(path)?;
+        let schema: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if schema > 1 {
+            bail!("这个知识库由更新版本创建，请使用同版本或更新的应用打开");
+        }
+        connection.busy_timeout(Duration::from_secs(10))?;
+        connection.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA foreign_keys=ON;
+             PRAGMA synchronous=NORMAL;
+             CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS roots(id TEXT PRIMARY KEY, path TEXT UNIQUE NOT NULL, data TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, path TEXT UNIQUE NOT NULL, data TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS documents(
+                 id TEXT PRIMARY KEY, path TEXT UNIQUE NOT NULL, root_id TEXT NOT NULL,
+                 project_id TEXT NOT NULL, version TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS documents_root ON documents(root_id);
+             CREATE INDEX IF NOT EXISTS documents_project ON documents(project_id);
+             CREATE TABLE IF NOT EXISTS chunks(
+                 id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                 ordinal INTEGER NOT NULL, text TEXT NOT NULL, location TEXT NOT NULL, lexical TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS chunks_document ON chunks(document_id, ordinal);
+             CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(chunk_id UNINDEXED, tokens, tokenize='unicode61');
+             CREATE TRIGGER IF NOT EXISTS chunks_insert AFTER INSERT ON chunks BEGIN
+                 INSERT INTO chunk_fts(chunk_id,tokens) VALUES(new.id,new.lexical);
+             END;
+             CREATE TRIGGER IF NOT EXISTS chunks_delete AFTER DELETE ON chunks BEGIN
+                 DELETE FROM chunk_fts WHERE chunk_id=old.id;
+             END;
+             CREATE TABLE IF NOT EXISTS embeddings(
+                 chunk_id TEXT PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
+                 model TEXT NOT NULL, dimensions INTEGER NOT NULL, vector BLOB NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS memories(id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS connections(id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, data TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS jobs(
+                 path TEXT PRIMARY KEY, root_id TEXT NOT NULL, force INTEGER NOT NULL DEFAULT 0,
+                 attempts INTEGER NOT NULL DEFAULT 0, available_at INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE IF NOT EXISTS events(
+                 id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
+                 kind TEXT NOT NULL, message TEXT NOT NULL, details TEXT NOT NULL
+             );
+             PRAGMA user_version=1;",
+        )?;
+        Ok(Self {
+            connection: Mutex::new(connection),
+            tokenizer: Jieba::new(),
+        })
+    }
+
+    pub fn settings(&self) -> Result<Settings> {
+        Ok(self.metadata("settings")?.unwrap_or_default())
+    }
+
+    pub fn metadata<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
+        let db = self.connection.lock().unwrap();
+        let value: Option<String> = db
+            .query_row("SELECT value FROM metadata WHERE key=?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        value
+            .map(|text| serde_json::from_str(&text).map_err(Into::into))
+            .transpose()
+    }
+
+    pub fn set_metadata<T: Serialize>(&self, key: &str, value: &T) -> Result<()> {
+        self.connection.lock().unwrap().execute(
+            "INSERT INTO metadata(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![key, serde_json::to_string(value)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn roots(&self) -> Result<Vec<Root>> {
+        self.list_json("roots")
+    }
+    pub fn projects(&self) -> Result<Vec<Project>> {
+        self.list_json("projects")
+    }
+    pub fn memories(&self) -> Result<Vec<Memory>> {
+        self.list_json("memories")
+    }
+    pub fn connections(&self) -> Result<Vec<Connection>> {
+        self.list_json("connections")
+    }
+
+    fn list_json<T: DeserializeOwned>(&self, table: &str) -> Result<Vec<T>> {
+        let db = self.connection.lock().unwrap();
+        let mut statement = db.prepare(&format!("SELECT data FROM {table} ORDER BY rowid"))?;
+        let values = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        values
+            .into_iter()
+            .map(|value| serde_json::from_str(&value).map_err(Into::into))
+            .collect()
+    }
+
+    pub fn root(&self, id: &str) -> Result<Root> {
+        self.get_json("roots", id)
+    }
+    pub fn project(&self, id: &str) -> Result<Project> {
+        self.get_json("projects", id)
+    }
+    pub fn document(&self, id: &str) -> Result<Document> {
+        self.get_json("documents", id)
+    }
+    pub fn memory(&self, id: &str) -> Result<Memory> {
+        self.get_json("memories", id)
+    }
+    pub fn client(&self, id: &str) -> Result<Connection> {
+        self.get_json("connections", id)
+    }
+
+    fn get_json<T: DeserializeOwned>(&self, table: &str, id: &str) -> Result<T> {
+        let text: String = self
+            .connection
+            .lock()
+            .unwrap()
+            .query_row(
+                &format!("SELECT data FROM {table} WHERE id=?1"),
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .context("记录不存在或已移除")?;
+        Ok(serde_json::from_str(&text)?)
+    }
+
+    pub fn save_root(&self, root: &Root) -> Result<()> {
+        self.connection.lock().unwrap().execute(
+            "INSERT INTO roots(id,path,data) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET path=excluded.path,data=excluded.data",
+            params![root.id,root.path,serde_json::to_string(root)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn save_project(&self, project: &Project) -> Result<()> {
+        self.connection.lock().unwrap().execute(
+            "INSERT INTO projects(id,path,data) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET path=excluded.path,data=excluded.data",
+            params![project.id,project.root_path,serde_json::to_string(project)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn ensure_project(&self, path: &str, name: &str) -> Result<Project> {
+        let existing: Option<String> = self
+            .connection
+            .lock()
+            .unwrap()
+            .query_row("SELECT data FROM projects WHERE path=?1", [path], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        if let Some(value) = existing {
+            return Ok(serde_json::from_str(&value)?);
+        }
+        let project = Project {
+            id: identifier(),
+            name: name.into(),
+            root_path: path.into(),
+            goal: String::new(),
+            approach: String::new(),
+            decisions: vec![],
+            summary_evidence: vec![],
+            updated_at: timestamp(),
+            summary_stale: false,
+        };
+        self.save_project(&project)?;
+        Ok(project)
+    }
+
+    pub fn document_by_path(&self, path: &str) -> Result<Option<Document>> {
+        let text: Option<String> = self
+            .connection
+            .lock()
+            .unwrap()
+            .query_row("SELECT data FROM documents WHERE path=?1", [path], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        text.map(|value| serde_json::from_str(&value).map_err(Into::into))
+            .transpose()
+    }
+
+    pub fn documents(&self) -> Result<Vec<Document>> {
+        self.list_json("documents")
+    }
+
+    pub fn save_document(&self, document: &Document) -> Result<()> {
+        self.connection.lock().unwrap().execute(
+            "INSERT INTO documents(id,path,root_id,project_id,version,status,data) VALUES(?1,?2,?3,?4,?5,?6,?7)
+             ON CONFLICT(id) DO UPDATE SET path=excluded.path,root_id=excluded.root_id,project_id=excluded.project_id,
+             version=excluded.version,status=excluded.status,data=excluded.data",
+            params![document.id,document.path,document.root_id,document.project_id,document.version,document.status,serde_json::to_string(document)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn lexical(&self, text: &str) -> String {
+        self.tokenizer
+            .cut_for_search(text, true)
+            .into_iter()
+            .filter(|word| word.chars().any(char::is_alphanumeric))
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    pub fn replace_document(&self, document: &Document, chunks: &[Chunk]) -> Result<()> {
+        let mut db = self.connection.lock().unwrap();
+        let transaction = db.transaction()?;
+        transaction.execute(
+            "INSERT INTO documents(id,path,root_id,project_id,version,status,data) VALUES(?1,?2,?3,?4,?5,?6,?7)
+             ON CONFLICT(id) DO UPDATE SET root_id=excluded.root_id,project_id=excluded.project_id,version=excluded.version,status=excluded.status,data=excluded.data",
+            params![document.id,document.path,document.root_id,document.project_id,document.version,document.status,serde_json::to_string(document)?],
+        )?;
+        transaction.execute("DELETE FROM chunks WHERE document_id=?1", [&document.id])?;
+        for chunk in chunks {
+            let terms = self.lexical(&format!("{} {}", document.title, chunk.text));
+            transaction.execute("INSERT INTO chunks(id,document_id,ordinal,text,location,lexical) VALUES(?1,?2,?3,?4,?5,?6)",
+                params![chunk.id,chunk.document_id,chunk.ordinal,chunk.text,serde_json::to_string(&chunk.location)?,terms])?;
+        }
+        transaction.commit()?;
+        drop(db);
+        self.invalidate_evidence(&document.id, Some(&document.version))?;
+        Ok(())
+    }
+
+    pub fn chunks(&self, document_id: &str) -> Result<Vec<Chunk>> {
+        let db = self.connection.lock().unwrap();
+        let mut statement = db.prepare(
+            "SELECT id,ordinal,text,location FROM chunks WHERE document_id=?1 ORDER BY ordinal",
+        )?;
+        let records = statement
+            .query_map([document_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, usize>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        records
+            .into_iter()
+            .map(|(id, ordinal, text, location)| {
+                Ok(Chunk {
+                    id,
+                    document_id: document_id.into(),
+                    ordinal,
+                    text,
+                    location: serde_json::from_str(&location)?,
+                })
+            })
+            .collect()
+    }
+
+    pub fn remove_document(&self, id: &str) -> Result<()> {
+        let mut db = self.connection.lock().unwrap();
+        let transaction = db.transaction()?;
+        transaction.execute("DELETE FROM documents WHERE id=?1", [id])?;
+        transaction.commit()?;
+        drop(db);
+        self.invalidate_evidence(id, None)?;
+        Ok(())
+    }
+
+    pub fn invalidate_evidence(
+        &self,
+        document_id: &str,
+        current_version: Option<&str>,
+    ) -> Result<()> {
+        for mut memory in self.memories()? {
+            let stale = memory.evidence.iter().any(|e| {
+                e.document_id == document_id && Some(e.version.as_str()) != current_version
+            });
+            if stale && memory.status != "dismissed" {
+                memory.history.push(json!({"at":timestamp(),"content":memory.content,"status":memory.status,"reason":"source_changed"}));
+                memory.status = "stale".into();
+                memory.updated_at = timestamp();
+                self.save_memory(&memory)?;
+            }
+        }
+        for mut project in self.projects()? {
+            if project.summary_evidence.iter().any(|e| {
+                e.document_id == document_id && Some(e.version.as_str()) != current_version
+            }) {
+                project.summary_stale = true;
+                self.save_project(&project)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn save_memory(&self, memory: &Memory) -> Result<()> {
+        self.connection.lock().unwrap().execute(
+            "INSERT INTO memories(id,data) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+            params![memory.id,serde_json::to_string(memory)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_memory(&self, id: &str) -> Result<()> {
+        self.connection
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM memories WHERE id=?1", [id])?;
+        Ok(())
+    }
+
+    pub fn save_client(&self, client: &Connection, token: Option<&str>) -> Result<()> {
+        let db = self.connection.lock().unwrap();
+        if let Some(token) = token {
+            let hash = blake3::hash(token.as_bytes()).to_hex().to_string();
+            db.execute(
+                "INSERT INTO connections(id,token_hash,data) VALUES(?1,?2,?3)",
+                params![client.id, hash, serde_json::to_string(client)?],
+            )?;
+        } else {
+            db.execute(
+                "UPDATE connections SET data=?2 WHERE id=?1",
+                params![client.id, serde_json::to_string(client)?],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn touch_client(&self, id: &str) -> Result<()> {
+        self.connection.lock().unwrap().execute(
+            "UPDATE connections SET data=json_set(data,'$.last_used',?2) WHERE id=?1",
+            params![id, timestamp()],
+        )?;
+        Ok(())
+    }
+
+    pub fn authenticate(&self, id: &str, token: &str) -> Result<Connection> {
+        let db = self.connection.lock().unwrap();
+        let row: Option<(String, String)> = db
+            .query_row(
+                "SELECT token_hash,data FROM connections WHERE id=?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let (expected, data) = row.context("Agent 连接不存在")?;
+        let digest = blake3::hash(token.as_bytes()).to_hex().to_string();
+        let difference = expected
+            .as_bytes()
+            .iter()
+            .zip(digest.as_bytes())
+            .fold(0_u8, |acc, (a, b)| acc | (a ^ b));
+        if expected.len() != digest.len() || difference != 0 {
+            bail!("Agent 凭据无效");
+        }
+        let client: Connection = serde_json::from_str(&data)?;
+        if !client.enabled {
+            bail!("此 Agent 连接已停用");
+        }
+        Ok(client)
+    }
+
+    pub fn save_embedding(&self, chunk_id: &str, model: &str, vector: &[f32]) -> Result<()> {
+        if vector.is_empty()
+            || vector.len() > 8192
+            || vector.iter().any(|v| !v.is_finite())
+            || vector.iter().all(|v| *v == 0.0)
+        {
+            bail!("向量模型返回了无效向量");
+        }
+        let bytes: Vec<u8> = vector
+            .iter()
+            .flat_map(|number| number.to_le_bytes())
+            .collect();
+        self.connection.lock().unwrap().execute(
+            "INSERT INTO embeddings(chunk_id,model,dimensions,vector) VALUES(?1,?2,?3,?4)
+             ON CONFLICT(chunk_id) DO UPDATE SET model=excluded.model,dimensions=excluded.dimensions,vector=excluded.vector",
+            params![chunk_id,model,vector.len(),bytes],
+        )?;
+        Ok(())
+    }
+
+    pub fn pending_embeddings(
+        &self,
+        model: &str,
+        limit: usize,
+        remote: bool,
+    ) -> Result<Vec<Chunk>> {
+        let db = self.connection.lock().unwrap();
+        let mut statement = db.prepare(
+            "SELECT c.id,c.document_id,c.ordinal,c.text,c.location FROM chunks c
+             JOIN documents d ON d.id=c.document_id JOIN roots r ON r.id=d.root_id
+             LEFT JOIN embeddings e ON e.chunk_id=c.id AND e.model=?1
+             WHERE e.chunk_id IS NULL AND d.status='ready' AND json_extract(r.data,'$.enabled')=1
+             AND (?3=0 OR json_extract(r.data,'$.policy')!='local') LIMIT ?2",
+        )?;
+        let rows = statement
+            .query_map(params![model, limit, remote], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, usize>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .map(|(id, document_id, ordinal, text, location)| {
+                Ok(Chunk {
+                    id,
+                    document_id,
+                    ordinal,
+                    text,
+                    location: serde_json::from_str(&location)?,
+                })
+            })
+            .collect()
+    }
+
+    pub fn lexical_candidates(
+        &self,
+        query: &str,
+        limit: usize,
+        roots: &[String],
+        projects: &[String],
+    ) -> Result<Vec<String>> {
+        let mut seen = HashSet::new();
+        let terms = self
+            .tokenizer
+            .cut_for_search(query, true)
+            .into_iter()
+            .filter(|word| word.chars().any(char::is_alphanumeric))
+            .map(|word| word.to_lowercase())
+            .filter(|word| seen.insert(word.clone()))
+            .take(30)
+            .map(|word| format!("\"{}\"*", word.replace('"', "\"\"")))
+            .collect::<Vec<_>>();
+        if terms.is_empty() {
+            return Ok(vec![]);
+        }
+        let db = self.connection.lock().unwrap();
+        let mut statement = db.prepare("SELECT f.chunk_id FROM chunk_fts f JOIN chunks c ON c.id=f.chunk_id JOIN documents d ON d.id=c.document_id
+            WHERE chunk_fts MATCH ?1 AND d.status='ready' AND d.root_id IN (SELECT value FROM json_each(?3))
+            AND d.project_id IN (SELECT value FROM json_each(?4)) ORDER BY bm25(chunk_fts) LIMIT ?2")?;
+        let ids = statement
+            .query_map(
+                params![
+                    terms.join(" OR "),
+                    limit,
+                    serde_json::to_string(roots)?,
+                    serde_json::to_string(projects)?
+                ],
+                |row| row.get(0),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ids)
+    }
+
+    pub fn vector_candidates(
+        &self,
+        model: &str,
+        vector: &[f32],
+        limit: usize,
+        roots: &[String],
+        projects: &[String],
+    ) -> Result<Vec<String>> {
+        let bytes: Vec<u8> = vector
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let db = self.connection.lock().unwrap();
+        let mut statement = db.prepare("SELECT e.chunk_id FROM embeddings e JOIN chunks c ON c.id=e.chunk_id JOIN documents d ON d.id=c.document_id
+            WHERE e.model=?1 AND e.dimensions=?2 AND d.status='ready' AND d.root_id IN (SELECT value FROM json_each(?5))
+            AND d.project_id IN (SELECT value FROM json_each(?6)) ORDER BY vec_distance_cosine(e.vector,?3) LIMIT ?4")?;
+        let ids = statement
+            .query_map(
+                params![
+                    model,
+                    vector.len(),
+                    bytes,
+                    limit,
+                    serde_json::to_string(roots)?,
+                    serde_json::to_string(projects)?
+                ],
+                |row| row.get(0),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ids)
+    }
+
+    pub fn hit(&self, chunk_id: &str) -> Result<SearchHit> {
+        let db = self.connection.lock().unwrap();
+        let record: (String,String,String,String,String) = db.query_row(
+            "SELECT c.id,c.text,c.location,d.data,p.data FROM chunks c JOIN documents d ON d.id=c.document_id JOIN projects p ON p.id=d.project_id WHERE c.id=?1",
+            [chunk_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
+        )?;
+        let document: Document = serde_json::from_str(&record.3)?;
+        let project: Project = serde_json::from_str(&record.4)?;
+        Ok(SearchHit {
+            chunk_id: record.0,
+            document_id: document.id,
+            title: document.title,
+            project_id: document.project_id,
+            project_name: project.name,
+            path: document.path,
+            version: document.version,
+            updated_at: document.updated_at,
+            text: record.1,
+            location: serde_json::from_str(&record.2)?,
+            score: 0.0,
+        })
+    }
+
+    pub fn enqueue(&self, path: &str, root_id: &str, force: bool) -> Result<()> {
+        self.connection.lock().unwrap().execute(
+            "INSERT INTO jobs(path,root_id,force) VALUES(?1,?2,?3)
+             ON CONFLICT(path) DO UPDATE SET force=MAX(jobs.force,excluded.force),root_id=excluded.root_id,available_at=0,attempts=0",
+            params![path,root_id,force],
+        )?;
+        Ok(())
+    }
+
+    pub fn next_job(&self) -> Result<Option<(String, String, bool, usize)>> {
+        Ok(self.connection.lock().unwrap().query_row(
+            "SELECT path,root_id,force,attempts FROM jobs WHERE available_at<=unixepoch() ORDER BY rowid LIMIT 1", [],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+        ).optional()?)
+    }
+
+    pub fn finish_job(&self, path: &str) -> Result<()> {
+        self.connection
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM jobs WHERE path=?1", [path])?;
+        Ok(())
+    }
+
+    pub fn retry_job(&self, path: &str, attempts: usize) -> Result<()> {
+        let delay = (5_i64 * 2_i64.pow(attempts.min(9) as u32)).min(3600);
+        self.connection.lock().unwrap().execute(
+            "UPDATE jobs SET attempts=?2,available_at=unixepoch()+?3 WHERE path=?1",
+            params![path, attempts + 1, delay],
+        )?;
+        Ok(())
+    }
+
+    pub fn event(&self, kind: &str, message: &str, details: Value) -> Result<()> {
+        let db = self.connection.lock().unwrap();
+        db.execute(
+            "INSERT INTO events(created_at,kind,message,details) VALUES(?1,?2,?3,?4)",
+            params![timestamp(), kind, message, details.to_string()],
+        )?;
+        db.execute(
+            "DELETE FROM events WHERE id < (SELECT COALESCE(MAX(id),0)-2000 FROM events)",
+            [],
+        )?;
+        Ok(())
+    }
+
+    pub fn events(&self, limit: usize) -> Result<Vec<Event>> {
+        let db = self.connection.lock().unwrap();
+        let mut statement = db.prepare(
+            "SELECT id,created_at,kind,message,details FROM events ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = statement
+            .query_map([limit], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .map(|(id, created_at, kind, message, details)| {
+                Ok(Event {
+                    id,
+                    created_at,
+                    kind,
+                    message,
+                    details: serde_json::from_str(&details)?,
+                })
+            })
+            .collect()
+    }
+
+    pub fn stats(&self) -> Result<Value> {
+        let db = self.connection.lock().unwrap();
+        let count = |table: &str| -> Result<i64> {
+            Ok(
+                db.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })?,
+            )
+        };
+        Ok(
+            json!({"documents":count("documents")?,"chunks":count("chunks")?,"vectors":count("embeddings")?,"pending":count("jobs")?,"projects":count("projects")?}),
+        )
+    }
+}
