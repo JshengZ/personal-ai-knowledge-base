@@ -17,7 +17,10 @@ async function hash(path) {
   for await (const bytes of createReadStream(path)) digest.update(bytes);
   return digest.digest("hex");
 }
-const files = listPackage(join(resources, "app.asar"));
+// ASAR lists use the host OS separator; audit one canonical form on both targets.
+const files = listPackage(join(resources, "app.asar")).map((file) =>
+  file.replaceAll("\\", "/"),
+);
 assert.ok(files.some((file) => file.endsWith("/desktop-dist/main.cjs")));
 assert.ok(files.some((file) => file.endsWith("/THIRD-PARTY-NOTICES.md")));
 assert.equal(
