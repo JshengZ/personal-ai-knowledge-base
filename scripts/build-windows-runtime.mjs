@@ -38,6 +38,7 @@ if (!process.argv.includes("--force") && existsSync(existing)) {
   const info = JSON.parse(await readFile(existing, "utf8"));
   if (
     info.source_sha256 === sourceHash &&
+    info.build_revision === 2 &&
     info.path_remapped === true &&
     (await hash(join(runtime, "llama-server.exe"))) === info.binary_sha256
   ) {
@@ -99,7 +100,10 @@ if (process.platform === "win32") {
   ]
     .map((value) => '"/pathmap:' + value.replaceAll('"', '\\"') + '"')
     .join(" ");
-  args.push("-DCMAKE_C_FLAGS=" + mapping, "-DCMAKE_CXX_FLAGS=" + mapping);
+  args.push(
+    "-DCMAKE_C_FLAGS=/experimental:deterministic " + mapping,
+    "-DCMAKE_CXX_FLAGS=/EHsc /experimental:deterministic " + mapping,
+  );
 } else {
   const mapping = [
     homedir() + "=/build-home",
@@ -175,6 +179,7 @@ await writeFile(
   JSON.stringify(
     {
       version,
+      build_revision: 2,
       source_url: "https://github.com/ggml-org/llama.cpp/tree/" + version,
       source_sha256: sourceHash,
       binary_sha256: await hash(binary),

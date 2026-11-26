@@ -133,6 +133,7 @@ test(
                   stats: value.stats,
                   semantic: value.semantic_progress,
                   embeddingBusy: value.embedding_busy,
+                  semanticError: value.semantic_error,
                 }),
               );
             }
@@ -163,6 +164,7 @@ test(
             })),
             stats: lastState?.stats,
             semantic: lastState?.semantic_progress,
+            semanticError: lastState?.semantic_error,
           }),
         );
         const log = await readFile(join(home, "service.log"), "utf8").catch(

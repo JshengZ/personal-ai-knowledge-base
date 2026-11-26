@@ -37,6 +37,8 @@ jobs:
       - name: Build static Windows embedding runtime
         if: matrix.target == 'win'
         run: npm run assets:win-runtime
+      - name: Verify short and bounded-long local embedding inputs
+        run: node scripts/check-embedding-runtime.mjs
       - run: npm run dist:${{ matrix.target }}
       - run: node scripts/verify-package.mjs ${{ matrix.target }}
       - run: node --test tests/packaged.test.mjs

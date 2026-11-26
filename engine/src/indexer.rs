@@ -782,13 +782,14 @@ async fn run_embeddings(state: Arc<AppState>) {
             if Models::remote_embeddings(&settings) {
                 settings.api_embedding_batch_size
             } else {
-                8
+                1
             },
             Models::remote_embeddings(&settings),
             cursor,
         ) {
             Ok(value) => value,
             Err(error) => {
+                tracing::warn!(error=%error,"pending vector selection failed");
                 *state.semantic_error.write().await = Some(error.to_string());
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 continue;
@@ -861,6 +862,7 @@ async fn run_embeddings(state: Arc<AppState>) {
                 }
             }
             Err(error) => {
+                tracing::warn!(error=%error,"background vector calculation failed");
                 *state.semantic_error.write().await = Some(error.to_string());
                 tokio::select! {_=tokio::time::sleep(Duration::from_secs(5))=>{},_=state.shutdown.cancelled()=>{}}
             }
