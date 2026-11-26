@@ -39,8 +39,6 @@ The guide only changes presentation and saves its own progress. New installation
 
 ![MCP step on the actual page](images/onboarding-mcp.png)
 
-![Optional built-in guide](images/onboarding.png)
-
 ## First folder
 
 In Sources, click **添加资料目录**, choose a project or document folder with **选择目录**, then **加入知识库**. The app indexes that folder and its descendants. The initial permission allows organization-model and agent use; change it later in **资料 → 资料目录** if needed.
@@ -103,8 +101,6 @@ Closing the window keeps the tray service running. Use the tray or app menu to q
 
 Use **设置 → 备份知识库** to export `.pkb` and **恢复备份** to restore it. Original files, API keys, and agent tokens are not transferred. Restore validates the schema and record content and imports allowed data into a fresh canonical database before replacing the live library. It creates a recovery snapshot, pauses synchronization, disables roots, and requires relinking folders, re-entering credentials, and recreating client connections.
 
-![Storage location and capacity](images/storage.png)
-
 ## Troubleshooting and boundaries
 
 | Situation                        | What to check                                                                           |
@@ -127,5 +123,3 @@ Open **设置 → 个性化**. Light is the default; Dark and Follow system are 
 Settings are grouped into Appearance, Models and retrieval, Indexing and background, Storage and backup, and Activity. Switching settings tabs preserves unsaved model fields; model/index/storage changes still require their Save button. Each Save action applies only its own settings group and preserves drafts in other groups. Appearance saves independently. The sidebar reduces to labeled icon controls in narrow windows; use the icon tooltip or expand the window for full labels.
 
 ![Appearance controls](images/appearance.png)
-
-![Appearance settings](images/appearance.png)
