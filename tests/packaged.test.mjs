@@ -23,7 +23,7 @@ async function until(callback, label, timeout = 90000) {
 
 test(
   "installed app: native setup, all bundled parsers, local RAG, project filters and MCP",
-  { timeout: 180000 },
+  { timeout: 360000 },
   async () => {
     const fixture = await mkdtemp(join(tmpdir(), "pkb-installed-"));
     const home = join(fixture, "data");
@@ -114,15 +114,63 @@ test(
           { method, path, body },
         );
       await api("POST", "/roots", { path: second, policy: "agents" });
-      const state = await until(async () => {
-        const value = await api("GET", "/state");
-        return value.documents.length === 5 &&
-          value.documents.every((document) => document.status === "ready") &&
-          value.stats.vectors >= value.stats.chunks &&
-          !value.embedding_busy
-          ? value
-          : false;
-      }, "five real documents parsed and embedded");
+      let lastProgress = 0;
+      let lastState;
+      let state;
+      try {
+        state = await until(
+          async () => {
+            const value = await api("GET", "/state");
+            lastState = value;
+            if (Date.now() - lastProgress >= 15000) {
+              lastProgress = Date.now();
+              console.log(
+                JSON.stringify({
+                  packagedIndexProgress: true,
+                  documents: value.documents.map(
+                    ({ title, status, error }) => ({ title, status, error }),
+                  ),
+                  stats: value.stats,
+                  semantic: value.semantic_progress,
+                  embeddingBusy: value.embedding_busy,
+                }),
+              );
+            }
+            assert.ok(
+              !value.documents.some((document) => document.status === "error"),
+              "fixture documents must parse successfully",
+            );
+            return value.documents.length === 5 &&
+              value.documents.every(
+                (document) => document.status === "ready",
+              ) &&
+              value.stats.vectors >= value.stats.chunks &&
+              !value.embedding_busy
+              ? value
+              : false;
+          },
+          "five real documents parsed and embedded",
+          process.platform === "win32" ? 240000 : 90000,
+        );
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            packagedIndexFailure: true,
+            documents: lastState?.documents.map(({ title, status, error }) => ({
+              title,
+              status,
+              error,
+            })),
+            stats: lastState?.stats,
+            semantic: lastState?.semantic_progress,
+          }),
+        );
+        const log = await readFile(join(home, "service.log"), "utf8").catch(
+          () => "Service log unavailable",
+        );
+        console.error(log.slice(-16000));
+        throw error;
+      }
       assert.equal(state.projects.length, 2);
       const project = state.projects.find(
         (project) => project.name === "订单校验",

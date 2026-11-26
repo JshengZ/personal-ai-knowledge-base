@@ -27,6 +27,8 @@
 
 [源码 CI](https://github.com/JshengZ/personal-ai-knowledge-base/actions/workflows/ci.yml) 在 Windows 与 macOS 原生运行，包含导览重放和桌面迁移；[安装包工作流](https://github.com/JshengZ/personal-ai-knowledge-base/actions/workflows/build-installers.yml) 另测试打包后的程序。请核对发布版本记录的具体源码提交及成功运行，配置了工作流不等于测试通过。源码、安装包与公司电脑验收分别记录；测试不使用真实公司资料或凭据。
 
+Windows 打包测试为 CPU 向量计算提供最多四分钟的等待窗口，每十五秒记录进度，失败时输出资料状态和服务日志。通过条件仍要求全部向量完成及真实 MCP 混合检索成功，超时不视为通过。
+
 ## 1.0.0 历史验收
 
 | 检查                   | 结果与证据                                                                                                                                                                         |
