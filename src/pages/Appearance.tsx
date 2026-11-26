@@ -8,7 +8,7 @@ import {
 } from "@phosphor-icons/react";
 import { accentColors, defaultAppearance, useAppearance } from "../appearance";
 import { useKnowledge } from "../context";
-import { Busy } from "../components/ui";
+import { Select, Busy } from "../components/ui";
 import type { Appearance } from "../types";
 
 export function AppearancePage() {
@@ -168,7 +168,7 @@ export function AppearancePage() {
           </h3>
           <p>仅用于原文、回答和项目正文。</p>
         </div>
-        <select
+        <Select
           id="reading-font"
           value={appearance.reading_font}
           onChange={(event) =>
@@ -179,12 +179,12 @@ export function AppearancePage() {
         >
           <option value="sans">无衬线</option>
           <option value="serif">衬线</option>
-        </select>
+        </Select>
       </div>
       <div className="appearance-row">
         <div>
           <h3>界面密度</h3>
-          <p>控制列表与表单的留白。</p>
+          <p>调整列表行高和表单间距。</p>
         </div>
         <fieldset className="segmented density-options" aria-label="界面密度">
           {(
@@ -211,7 +211,7 @@ export function AppearancePage() {
           <h3>
             <label htmlFor="sidebar-compact">收起侧栏</label>
           </h3>
-          <p>为资料和内容留出更多空间。</p>
+          <p>侧栏仅显示图标。</p>
         </div>
         <input
           id="sidebar-compact"
@@ -227,15 +227,17 @@ export function AppearancePage() {
       <div className="appearance-preview">
         <div>
           <h3>阅读预览</h3>
-          <p className="reading-text">把资料放在手边，让知识自然积累。</p>
-          <small>正文、按钮与列表使用统一的字号比例。</small>
+          <p className="reading-text">
+            当前字体的中文、English 与数字 0123456789。
+          </p>
+          <small>用于查看字体、字号和主题颜色。</small>
         </div>
         <button
           type="button"
           className="primary"
           onClick={() => notify("当前颜色与字号已应用。")}
         >
-          操作按钮
+          预览按钮
         </button>
       </div>
       <div className="appearance-footer">

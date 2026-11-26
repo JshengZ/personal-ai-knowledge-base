@@ -10,6 +10,7 @@ use axum::{
     Json, Router,
 };
 use serde::Deserialize;
+use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -96,6 +97,7 @@ pub fn router(app: Arc<AppState>, token: String, port: u16) -> Router {
         .route("/memories/{id}", patch(update_memory).delete(remove_memory))
         .route("/settings", patch(save_settings))
         .route("/appearance", get(get_appearance).patch(save_appearance))
+        .route("/onboarding", get(get_onboarding).patch(save_onboarding))
         .route("/storage/validate", post(validate_storage))
         .route("/models/test/{kind}", post(test_model))
         .route("/connections", post(create_connection))
@@ -130,6 +132,14 @@ async fn isolate_requests(State(state): State<ApiState>, request: Request, next:
     {
         return next.run(request).await;
     }
+    // Only short read requests have the 12-second responsiveness budget.
+    // A timed-out spawn_blocking task keeps running: imposing that deadline on
+    // mutations produced false failures followed by invisible late writes.
+    // Model requests have their own HTTP timeout; backups must finish atomically.
+    let short_read = (request.method() == axum::http::Method::GET
+        && path != "/api/backups/export")
+        || path == "/api/search"
+        || (path.starts_with("/agent/") && !path.ends_with("/propose_memory"));
     let Ok(permit) = state.app.requests.clone().try_acquire_owned() else {
         return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"知识服务正在处理其他请求，请稍后重试。索引可在资料页暂停。","code":"busy"}))).into_response();
     };
@@ -138,6 +148,15 @@ async fn isolate_requests(State(state): State<ApiState>, request: Request, next:
         let _permit = permit;
         handle.block_on(next.run(request))
     });
+    if !short_read {
+        return match work.await {
+            Ok(response) => response,
+            Err(error) => {
+                tracing::error!(%error, "request worker failed");
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error":"请求处理失败，请查看处理记录。"}))).into_response()
+            }
+        };
+    }
     match tokio::time::timeout(std::time::Duration::from_secs(12), work).await {
         Ok(Ok(response)) => response,
         _ => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"知识服务忙碌，本次请求已超时。请暂停索引或稍后重试。","code":"busy"}))).into_response(),
@@ -174,8 +193,8 @@ async fn snapshot(State(state): State<ApiState>) -> ApiResult {
         .max(stats["documents"].as_u64().unwrap_or(0) + stats["pending"].as_u64().unwrap_or(0)));
     Ok(Json(
         json!({"version":env!("CARGO_PKG_VERSION"),"roots":app.store.roots()?,"projects":app.store.projects()?,
-        "documents":documents.into_iter().take(100).collect::<Vec<_>>(),"memories":app.store.memories()?,
-        "connections":app.store.connections()?,"stats":stats,"settings":settings,
+        "documents":documents.into_iter().filter(|document| document.status != "removing").take(100).collect::<Vec<_>>(),"memories":app.store.memories()?,
+        "connections":app.store.connections()?,"stats":stats,"settings":settings,"onboarding":crate::onboarding::load(&app.store)?,
         "events":app.store.events(60)?,"last_indexed":app.store.metadata::<String>("last_indexed")?,
         "last_scan":app.store.metadata::<String>("last_scan")?,"scanning":app.scanning.load(Ordering::SeqCst),
         "embedding_busy":app.embedding_busy.load(Ordering::SeqCst),"embedding_available":app.models.embedding_available(&settings),
@@ -192,6 +211,7 @@ async fn documents(
 ) -> ApiResult {
     let mut documents = state.app.store.documents()?;
     documents.retain(|document| {
+        if document.status == "removing" { return false; }
         query
             .get("project_id")
             .is_none_or(|id| document.project_id == *id)
@@ -355,14 +375,17 @@ async fn update_root(
 async fn remove_root(State(state): State<ApiState>, Path(id): Path<String>) -> ApiResult {
     let app = &state.app;
     let _maintenance = app.maintenance.write().await;
-    for document in app
+    let mut root = app.store.root(&id)?;
+    root.enabled = false;
+    app.store.save_root(&root)?;
+    let ids = app
         .store
         .documents()?
         .into_iter()
         .filter(|document| document.root_id == id)
-    {
-        app.store.remove_document(&document.id)?;
-    }
+        .map(|document| document.id)
+        .collect::<Vec<_>>();
+    app.store.schedule_cleanup_many(&ids)?;
     {
         let db = app.store.connection.lock().unwrap();
         db.execute("DELETE FROM jobs WHERE root_id=?1", [&id])?;
@@ -478,6 +501,15 @@ async fn get_appearance(State(state): State<ApiState>) -> ApiResult {
     Ok(Json(json!(crate::appearance::load(&state.app.store)?)))
 }
 
+async fn get_onboarding(State(state): State<ApiState>) -> ApiResult {
+    Ok(Json(json!(crate::onboarding::load(&state.app.store)?)))
+}
+
+async fn save_onboarding(State(state): State<ApiState>, Json(input): Json<crate::onboarding::Update>) -> ApiResult {
+    let _maintenance = state.app.maintenance.read().await;
+    Ok(Json(json!(crate::onboarding::update(&state.app.store, input)?)))
+}
+
 async fn save_appearance(State(state): State<ApiState>, Json(input): Json<Value>) -> ApiResult {
     let _maintenance = state.app.maintenance.read().await;
     Ok(Json(json!(crate::appearance::update(&state.app.store, input)?)))
@@ -541,7 +573,20 @@ async fn save_settings(State(state): State<ApiState>, Json(mut input): Json<Valu
             provider.has_key = !value.is_empty();
         }
     }
-    app.store.set_metadata("settings", &settings)?;
+    {
+        let mut db = app.store.connection.lock().unwrap();
+        let transaction = db.transaction()?;
+        if !changes.contains_key("onboarding_complete") {
+            // A guide can finish while provider validation/keychain work is in
+            // progress. Preserve its most recent flag under the writer lock.
+            settings.onboarding_complete = transaction.query_row(
+                "SELECT COALESCE(json_extract(value,'$.onboarding_complete'),0) FROM metadata WHERE key='settings'",
+                [], |row| row.get::<_, bool>(0),
+            ).optional()?.unwrap_or(false);
+        }
+        transaction.execute("INSERT INTO metadata(key,value) VALUES('settings',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [serde_json::to_string(&settings)?])?;
+        transaction.commit()?;
+    }
     for (kind, previous, current) in [
         ("chat", &old.chat, &settings.chat),
         ("embedding", &old.embedding, &settings.embedding),
@@ -641,6 +686,7 @@ pub async fn invoke_tool(
     tool: &str,
     input: Value,
 ) -> Result<Value> {
+    let _maintenance = app.maintenance.try_read().map_err(|_| anyhow::anyhow!("知识库正在备份、恢复或调整资料目录，请稍后重试。"))?;
     let scope = Scope::Agent(client);
     match tool {
         "get_context" => retrieval::context(app, &scope, &serde_json::from_value(input)?).await,

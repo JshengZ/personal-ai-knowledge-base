@@ -116,7 +116,12 @@ fn excluded_directory(name: &str) -> bool {
     )
 }
 
-fn eligible(path: &Path, root: &Root, state: &AppState) -> Result<bool> {
+pub(crate) fn eligible(path: &Path, root: &Root, state: &AppState) -> Result<bool> {
+    // The walker never follows file symlinks. Apply the same rule to reads and
+    // queued cleanup so replacing a source with a link cannot revive old text.
+    if std::fs::symlink_metadata(path).is_ok_and(|value| value.file_type().is_symlink()) {
+        return Ok(false);
+    }
     if path.starts_with(&state.home)
         || (!state.runtime.resources.as_os_str().is_empty()
             && path.starts_with(&state.runtime.resources))
@@ -140,7 +145,7 @@ fn eligible(path: &Path, root: &Root, state: &AppState) -> Result<bool> {
 }
 
 pub async fn scan_all(state: Arc<AppState>, force: bool) -> Result<()> {
-    if !state.indexing_allowed() {
+    if !state.reconciliation_allowed() {
         return Ok(());
     }
     let _maintenance = state.maintenance.read().await;
@@ -174,6 +179,15 @@ pub async fn scan_all(state: Arc<AppState>, force: bool) -> Result<()> {
 }
 
 fn scan_root(state: &AppState, root: &Root, force: bool) -> Result<()> {
+    reconcile_root(state, root, force, || state.indexing_allowed())
+}
+
+pub(crate) fn reconcile_root(
+    state: &AppState,
+    root: &Root,
+    force: bool,
+    allow_growth: impl Fn() -> bool,
+) -> Result<()> {
     let directory = Path::new(&root.path)
         .canonicalize()
         .context("目录不可用，请重新关联目录")?;
@@ -256,10 +270,10 @@ fn scan_root(state: &AppState, root: &Root, force: bool) -> Result<()> {
         let changed = state.store.document_by_path(&path)?.is_none_or(|document| {
             document.size != metadata.len()
                 || document.modified_ms != modified_ms(&metadata)
-                || document.status == "indexing"
+                || matches!(document.status.as_str(), "indexing" | "removing")
         });
         if force || changed {
-            if queued < 5000 && state.indexing_allowed() {
+            if queued < 5000 && allow_growth() {
                 state.store.enqueue(&path, &root.id, force)?;
                 queued += 1;
             } else {
@@ -274,20 +288,29 @@ fn scan_root(state: &AppState, root: &Root, force: bool) -> Result<()> {
         .store
         .set_metadata(&format!("scan_formats:{}", root.id), &formats)?;
     if !walk_error {
-        for document in state
+        // Cancel obsolete parse jobs without processing them. Reclamation has
+        // its own bounded queue and does not need another full filesystem scan
+        // for every 64 legacy chunks removed.
+        for path in state.store.queued_paths(&root.id)? {
+            if !found.contains(&path) {
+                state.store.finish_job(&path)?;
+            }
+        }
+        let removals = state
             .store
             .documents()?
             .into_iter()
             .filter(|document| document.root_id == root.id)
-        {
-            if !found.contains(&document.path) {
-                state.store.remove_document(&document.id)?;
-            }
-        }
+            .filter(|document| !found.contains(&document.path))
+            .map(|document| document.id)
+            .collect::<Vec<_>>();
+        state.store.schedule_cleanup_many(&removals)?;
     } else {
         bail!("部分目录无法访问，已保留未能核对的资料记录");
     }
-    state.store.set_metadata(&format!("scan_deferred:{}",root.id),&deferred)?;
+    state
+        .store
+        .set_metadata(&format!("scan_deferred:{}", root.id), &deferred)?;
     Ok(())
 }
 
@@ -309,6 +332,9 @@ pub async fn run(state: Arc<AppState>) {
     let worker = state.clone();
     let handle = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || handle.block_on(run_jobs(worker)));
+    let worker = state.clone();
+    let handle = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || handle.block_on(run_cleanup(worker)));
     let worker = state.clone();
     let handle = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || handle.block_on(run_embeddings(worker)));
@@ -345,11 +371,11 @@ pub async fn run(state: Arc<AppState>) {
                 if let Some(mut paths)=event {
                     tokio::time::sleep(Duration::from_millis(900)).await;
                     while paths.len()<4096 { match changes.try_recv() { Ok(extra)=>paths.extend(extra), Err(_)=>break } }
-                    if state.indexing_allowed() {
+                    if state.reconciliation_allowed() {
                         let roots=state.store.roots().unwrap_or_default();
                         for path in paths.into_iter().collect::<HashSet<_>>() {
                             if let Some(root)=roots.iter().filter(|root|root.enabled && path.starts_with(&root.path)).max_by_key(|root|root.path.len()) {
-                                if path.is_file() && eligible(&path,root,&state).unwrap_or(false) && state.store.pending_jobs().unwrap_or(5000)<5000 {let _=state.store.enqueue(&path.to_string_lossy(),&root.id,false);}
+                                if state.indexing_allowed() && path.is_file() && eligible(&path,root,&state).unwrap_or(false) && state.store.pending_jobs().unwrap_or(5000)<5000 {let _=state.store.enqueue(&path.to_string_lossy(),&root.id,false);}
                             }
                         }
                         let _=scan_all(state.clone(),false).await;
@@ -370,6 +396,56 @@ pub async fn run(state: Arc<AppState>) {
     }
 }
 
+async fn run_cleanup(state: Arc<AppState>) {
+    while !state.stopping.load(Ordering::SeqCst) {
+        if !state.cleanup_allowed() {
+            tokio::select! { _=tokio::time::sleep(Duration::from_secs(1))=>{}, _=state.shutdown.cancelled()=>break }
+            continue;
+        }
+        let result = async {
+            // Release maintenance access after each small transaction. A root
+            // permission change or backup need not wait for a whole large purge.
+            let _maintenance = state.maintenance.read().await;
+            cleanup_step(&state)
+        }
+        .await;
+        match result {
+            Ok(true) => tokio::task::yield_now().await,
+            Ok(false) => {
+                tokio::select! { _=tokio::time::sleep(Duration::from_millis(350))=>{}, _=state.shutdown.cancelled()=>break }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "bounded index cleanup deferred");
+                tokio::select! { _=tokio::time::sleep(Duration::from_secs(2))=>{}, _=state.shutdown.cancelled()=>break }
+            }
+        }
+    }
+}
+
+pub(crate) fn cleanup_step(state: &AppState) -> Result<bool> {
+    let Some(id) = state.store.next_cleanup()? else {
+        return Ok(false);
+    };
+    let document = state.store.document(&id)?;
+    let wanted = Path::new(&document.path).is_file()
+        && state.store.root(&document.root_id).is_ok_and(|root| {
+            root.enabled
+                && Path::new(&document.path).canonicalize().is_ok_and(|path| {
+                    Path::new(&root.path)
+                        .canonicalize()
+                        .is_ok_and(|root| path.starts_with(root))
+                })
+                && eligible(Path::new(&document.path), &root, state).unwrap_or(false)
+        });
+    if wanted {
+        state.store.cancel_cleanup(&id)?;
+        state.wake.notify_one();
+    } else {
+        state.store.remove_document_step(&id)?;
+    }
+    Ok(true)
+}
+
 async fn run_jobs(state: Arc<AppState>) {
     while !state.stopping.load(Ordering::SeqCst) {
         if !state.indexing_allowed() {
@@ -382,7 +458,13 @@ async fn run_jobs(state: Arc<AppState>) {
             match index_file(&state, &path, &root_id, force).await {
                 Ok(()) => {
                     let _ = state.store.finish_job(&path);
-                    if state.store.pending_jobs().is_ok_and(|count|count==500 || count==0) { state.wake.notify_one(); }
+                    if state
+                        .store
+                        .pending_jobs()
+                        .is_ok_and(|count| count == 500 || count == 0)
+                    {
+                        state.wake.notify_one();
+                    }
                 }
                 Err(error) => {
                     let message = crate::storage::error_message(&error);

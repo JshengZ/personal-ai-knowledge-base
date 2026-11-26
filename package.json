@@ -23,7 +23,8 @@
     "test": "cargo test --manifest-path engine/Cargo.toml && node --test tests/parser.test.mjs",
     "test:integration": "node --test tests/integration.test.mjs",
     "test:resilience": "node --test tests/mcp-resilience.test.mjs",
-    "test:desktop": "node --test tests/desktop-storage.test.mjs"
+    "test:desktop": "node --test tests/desktop-storage.test.mjs",
+    "test:onboarding": "node --test tests/onboarding.test.mjs"
   },
   "dependencies": {
     "@napi-rs/canvas": "1.2.0",

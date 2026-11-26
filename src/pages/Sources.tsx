@@ -11,7 +11,7 @@ import {
 import { request } from "../api";
 import { useKnowledge } from "../context";
 import type { Document, Root } from "../types";
-import { Empty, FileIcon, Modal, date } from "../components/ui";
+import { Select, Empty, FileIcon, Modal, date } from "../components/ui";
 import { IndexProgress } from "../components/IndexProgress";
 
 const statusNames: Record<string, string> = {
@@ -119,9 +119,9 @@ export function Sources() {
       <header className="page-heading">
         <div>
           <h1>资料与同步</h1>
-          <p>目录持续更新，检索随时可用。</p>
+          <p>管理资料目录和索引状态。</p>
         </div>
-        <button className="primary" onClick={addRoot}>
+        <button className="primary" onClick={addRoot} data-guide="add-source">
           <PlusIcon size={17} />
           添加资料目录
         </button>
@@ -207,7 +207,7 @@ export function Sources() {
             <label className="sr-only" htmlFor="file-project">
               项目范围
             </label>
-            <select
+            <Select
               id="file-project"
               value={scope}
               onChange={(event) => setScope(event.target.value)}
@@ -218,11 +218,11 @@ export function Sources() {
                   {project.name}
                 </option>
               ))}
-            </select>
+            </Select>
             <label className="sr-only" htmlFor="file-status">
               索引状态
             </label>
-            <select
+            <Select
               id="file-status"
               value={status}
               onChange={(event) => setStatus(event.target.value)}
@@ -233,7 +233,7 @@ export function Sources() {
                   {label}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
           <div className="section-heading">
             <p className="muted">
@@ -312,7 +312,7 @@ export function Sources() {
             </div>
           ) : (
             <Empty
-              title={query || status ? "没有符合条件的文件" : "等待资料加入"}
+              title={query || status ? "没有符合条件的文件" : "暂无资料"}
               action={
                 !data.roots.length ? (
                   <button onClick={addRoot}>选择资料目录</button>
@@ -393,14 +393,14 @@ export function Sources() {
             ))
           ) : (
             <Empty
-              title="选择需要持续更新的目录"
+              title="暂无资料目录"
               action={
                 <button className="primary" onClick={addRoot}>
                   添加资料目录
                 </button>
               }
             >
-              项目文件、工作文档和笔记都可以加入。
+              添加包含文档、笔记或代码的文件夹。
             </Empty>
           )}
         </div>
@@ -497,6 +497,7 @@ export function RootDialog({
         <div className="input-action">
           <input
             required
+            aria-label="资料目录"
             value={path}
             onChange={(event) => setPath(event.target.value)}
             placeholder={
@@ -521,14 +522,15 @@ export function RootDialog({
       </label>
       <label>
         资料用途
-        <select
+        <Select
+          aria-label="资料用途"
           value={policy}
           onChange={(event) => setPolicy(event.target.value as Root["policy"])}
         >
           <option value="agents">允许公司模型与已连接的 Agent 使用</option>
           <option value="company">允许公司模型，仅在知识库窗口使用</option>
           <option value="local">仅本机检索和阅读</option>
-        </select>
+        </Select>
       </label>
       <details className="advanced">
         <summary>排除规则</summary>

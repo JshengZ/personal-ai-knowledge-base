@@ -7,7 +7,7 @@ import {
 import { useKnowledge } from "../context";
 import { request, downloadBackup, restoreBackup } from "../api";
 import type { Provider, Settings, StorageInfo } from "../types";
-import { Busy, Modal, date } from "../components/ui";
+import { Select, Busy, Modal, date } from "../components/ui";
 import { AppearancePage } from "./Appearance";
 
 const settingTabs = [
@@ -17,11 +17,15 @@ const settingTabs = [
   { id: "storage", label: "存储与备份" },
   { id: "activity", label: "处理记录" },
 ] as const;
-type SettingsTab = (typeof settingTabs)[number]["id"];
-
 export function SettingsPage() {
-  const { data, refresh, notify } = useKnowledge();
-  const [tab, setTab] = useState<SettingsTab>("appearance");
+  const {
+    data,
+    refresh,
+    notify,
+    startGuide,
+    settingsTab: tab,
+    setSettingsTab: setTab,
+  } = useKnowledge();
   const [settings, setSettings] = useState<Settings>(() =>
     structuredClone(data.settings),
   );
@@ -61,13 +65,63 @@ export function SettingsPage() {
     }, 1000);
     return () => clearInterval(timer);
   }, [busy]);
-  const save = async () => {
-    const result = await request<Settings>("PATCH", "/settings", {
-      ...settings,
-      keys,
-    });
-    setSettings(result);
-    setKeys({});
+  type SaveScope =
+    "models" | "indexing" | "storage" | "chat" | "embedding" | "rerank";
+  const save = async (
+    scope: SaveScope = tab === "indexing" ? "indexing" : "models",
+  ) => {
+    const groups: Record<SaveScope, (keyof Settings)[]> = {
+      models: [
+        "chat",
+        "embedding",
+        "embedding_mode",
+        "rerank",
+        "rerank_enabled",
+        "auto_local_chunk_limit",
+        "api_embedding_batch_size",
+      ],
+      indexing: [
+        "auto_summarize",
+        "ocr_enabled",
+        "max_file_mb",
+        "indexing_profile",
+        "reconcile_seconds",
+      ],
+      storage: ["min_free_disk_gb", "max_index_gb"],
+      chat: ["chat"],
+      embedding: [
+        "embedding",
+        "embedding_mode",
+        "auto_local_chunk_limit",
+        "api_embedding_batch_size",
+      ],
+      rerank: ["rerank", "rerank_enabled"],
+    };
+    const fields = groups[scope];
+    const keyNames =
+      scope === "models"
+        ? ["chat", "embedding", "rerank"]
+        : ["chat", "embedding", "rerank"].includes(scope)
+          ? [scope]
+          : [];
+    const selectedKeys = Object.fromEntries(
+      Object.entries(keys).filter(([kind]) => keyNames.includes(kind)),
+    );
+    const patch: Record<string, unknown> = Object.fromEntries(
+      fields.map((field) => [field, settings[field]]),
+    );
+    if (Object.keys(selectedKeys).length) patch.keys = selectedKeys;
+    const result = await request<Settings>("PATCH", "/settings", patch);
+    // Keep drafts in other tabs; a storage save must not submit or erase them.
+    setSettings((previous) => ({
+      ...previous,
+      ...Object.fromEntries(fields.map((field) => [field, result[field]])),
+    }));
+    setKeys((previous) =>
+      Object.fromEntries(
+        Object.entries(previous).filter(([kind]) => !keyNames.includes(kind)),
+      ),
+    );
     await refresh();
     return result;
   };
@@ -84,11 +138,11 @@ export function SettingsPage() {
       setBusy("");
     }
   };
-  const test = async (kind: string) => {
+  const test = async (kind: "chat" | "embedding" | "rerank") => {
     setBusy(kind);
     setError("");
     try {
-      await save();
+      await save(kind);
       const result = await request<{
         elapsed_ms: number;
         details: { dimensions?: number };
@@ -129,7 +183,6 @@ export function SettingsPage() {
       <header className="page-heading settings-page-heading">
         <div>
           <h1>设置</h1>
-          <p>按你的习惯，调整这间工作室。</p>
         </div>
       </header>
       <div className="settings-tabs tabs" role="tablist" aria-label="设置分类">
@@ -220,7 +273,9 @@ export function SettingsPage() {
                   <div className="settings-fields">
                     <label>
                       运行方式
-                      <select
+                      <Select
+                        data-guide="embedding-mode"
+                        aria-label="运行方式"
                         value={settings.embedding_mode}
                         onChange={(event) =>
                           setSettings((previous) => ({
@@ -231,11 +286,11 @@ export function SettingsPage() {
                         }
                       >
                         <option value="auto">
-                          优先公司接口，使用随包模型作为后备
+                          公司接口优先，未配置时使用本地模型
                         </option>
                         <option value="local">使用随包 Qwen3 检索模型</option>
                         <option value="disabled">仅使用全文检索</option>
-                      </select>
+                      </Select>
                     </label>
                     {settings.embedding_mode === "auto" && (
                       <ProviderFields
@@ -423,7 +478,8 @@ export function SettingsPage() {
                   </label>
                   <label>
                     单文件大小上限
-                    <select
+                    <Select
+                      aria-label="单文件大小上限"
                       value={settings.max_file_mb}
                       onChange={(event) =>
                         setSettings((previous) => ({
@@ -437,11 +493,11 @@ export function SettingsPage() {
                           {value} MB
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </label>
                   <label>
                     索引资源占用
-                    <select
+                    <Select
                       value={settings.indexing_profile}
                       aria-label="索引资源占用"
                       onChange={(event) =>
@@ -461,11 +517,12 @@ export function SettingsPage() {
                       <option value="performance">
                         快速 · 本地模型最多 6 线程
                       </option>
-                    </select>
+                    </Select>
                   </label>
                   <label>
                     目录补扫间隔
-                    <select
+                    <Select
+                      aria-label="目录补扫间隔"
                       value={settings.reconcile_seconds}
                       onChange={(event) =>
                         setSettings((previous) => ({
@@ -478,7 +535,7 @@ export function SettingsPage() {
                       <option value={300}>5 分钟</option>
                       <option value={900}>15 分钟</option>
                       <option value={3600}>1 小时</option>
-                    </select>
+                    </Select>
                   </label>
                   <label className="checkbox-label">
                     <input
@@ -537,15 +594,23 @@ export function SettingsPage() {
                 )}
                 <p className="muted">
                   存储盘可用 {sizeLabel(data.storage.available_bytes)} ·
-                  索引占用 {sizeLabel(data.storage.index_bytes)} · 容量上限{" "}
-                  {sizeLabel(data.storage.limit_bytes)}
+                  有效索引{" "}
+                  {sizeLabel(
+                    data.storage.quota_bytes ?? data.storage.index_bytes,
+                  )}{" "}
+                  · 容量上限 {sizeLabel(data.storage.limit_bytes)}
+                </p>
+                <p className="muted">
+                  索引文件 {sizeLabel(data.storage.index_bytes)} · 可复用空间{" "}
+                  {sizeLabel(data.storage.reusable_bytes ?? 0)}
+                  。删除后的空闲页可继续使用；迁移可将文件占用转移到其他磁盘。
                 </p>
                 {data.storage.reason && (
                   <p className="notice error" role="alert">
                     {data.storage.reason}
                   </p>
                 )}
-                <div className="storage-limits">
+                <div className="storage-limits" data-guide="storage-limits">
                   <label>
                     至少保留可用空间（GB）
                     <input
@@ -581,7 +646,7 @@ export function SettingsPage() {
                   disabled={!!busy}
                   onClick={() => {
                     setBusy("save-storage");
-                    void save()
+                    void save("storage")
                       .then(() => notify("存储限制已保存"))
                       .catch((error) => notify(error.message, true))
                       .finally(() => setBusy(""));
@@ -734,6 +799,11 @@ export function SettingsPage() {
           </section>
         )}
       </div>
+      <div className="guide-entry">
+        <button type="button" className="text-action" onClick={startGuide}>
+          重新查看使用导览
+        </button>
+      </div>
       {moving && (
         <Modal
           title="迁移知识库存储位置"
@@ -840,7 +910,8 @@ export function ProviderFields({
       {showProtocol && (
         <label>
           接口协议
-          <select
+          <Select
+            aria-label="接口协议"
             value={provider.protocol}
             onChange={(event) =>
               onChange({ ...provider, protocol: event.target.value })
@@ -848,7 +919,7 @@ export function ProviderFields({
           >
             <option value="openai">OpenAI 兼容接口</option>
             <option value="anthropic">Anthropic 兼容接口</option>
-          </select>
+          </Select>
         </label>
       )}
       <label>
@@ -884,6 +955,7 @@ export function ProviderFields({
         API Key
         <input
           type="password"
+          aria-label="API Key"
           autoComplete="new-password"
           value={apiKey}
           onChange={(event) => onKeyChange(event.target.value)}

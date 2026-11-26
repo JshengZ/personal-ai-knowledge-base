@@ -4,6 +4,8 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { AppearanceProvider } from "./appearance";
 import "./styles.css";
+import "./controls.css";
+import "./tour.css";
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

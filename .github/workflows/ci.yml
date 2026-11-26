@@ -47,3 +47,5 @@ jobs:
         run: npm run test:resilience
       - name: Desktop storage migration GUI
         run: npm run test:desktop
+      - name: Optional first-run guide and replay
+        run: npm run test:onboarding

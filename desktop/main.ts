@@ -43,6 +43,7 @@ let home = bootstrap;
 let startupError = "";
 let storageBusy = false;
 let storagePhase = "";
+let storageExitNotice = false;
 let initialAppearance: Record<string, unknown> | undefined;
 function locateData() {
   let current = bootstrap;
@@ -94,7 +95,7 @@ const single = app.requestSingleInstanceLock();
 if (!single) app.quit();
 else {
   app.on("before-quit", (event) => {
-    if (!quitting && service) {
+    if (!quitting && (service || storageBusy)) {
       event.preventDefault();
       void quit();
     }
@@ -457,7 +458,14 @@ async function call(method: string, path: string, body?: unknown, raw = false) {
           : body instanceof Buffer
             ? body
             : JSON.stringify(body),
-      signal: AbortSignal.timeout(180000),
+      // Backups have a bounded format size but disk duration is unpredictable.
+      // Aborting an atomic restore would report failure while it still commits.
+      signal:
+        (method === "GET" && !path.startsWith("/backups/")) ||
+        path === "/search" ||
+        path === "/ask"
+          ? AbortSignal.timeout(180000)
+          : undefined,
     },
   );
   if (raw && response.ok) return Buffer.from(await response.arrayBuffer());
@@ -552,8 +560,8 @@ async function start() {
       statfs(dirname(destination)),
     ]);
     const available = disk.bavail * disk.bsize;
-    if (available < source.total_bytes + 5 * 1024 ** 3)
-      throw new Error("目标盘空间不足，需容纳现有知识库并额外保留至少 5 GB。");
+    // The engine distinguishes fresh copies from a verified migration retry.
+    // A ready copy must not require another library-sized amount of free space.
     return {
       path: destination,
       source_bytes: source.total_bytes,
@@ -726,6 +734,24 @@ function showWindow() {
 }
 
 async function quit() {
+  if (storageBusy) {
+    window?.show();
+    if (!storageExitNotice) {
+      storageExitNotice = true;
+      try {
+        await dialog.showMessageBox({
+          type: "info",
+          title: "正在迁移数据",
+          message: "迁移尚未完成",
+          detail: (storagePhase || "正在处理数据") + "。完成后将自动重启应用。",
+          buttons: ["继续迁移"],
+        });
+      } finally {
+        storageExitNotice = false;
+      }
+    }
+    return;
+  }
   quitting = true;
   try {
     if (service) await stopService(service);

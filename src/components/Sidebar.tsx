@@ -8,6 +8,7 @@ import {
   GearSixIcon,
   SidebarSimpleIcon,
   DatabaseIcon,
+  QuestionIcon,
 } from "@phosphor-icons/react";
 import { useKnowledge, type View } from "../context";
 import { useAppearance } from "../appearance";
@@ -21,7 +22,7 @@ const items = [
 ] as const;
 
 export function Sidebar() {
-  const { data, view, navigate } = useKnowledge();
+  const { data, view, navigate, startGuide } = useKnowledge();
   const { appearance, update } = useAppearance();
   const pending = data.memories.filter(
     (memory) => memory.status === "pending" || memory.status === "stale",
@@ -29,6 +30,7 @@ export function Sidebar() {
   const button = (target: View, label: string, Icon: typeof GearSixIcon) => (
     <button
       key={target}
+      data-guide={"nav-" + target}
       className={view === target ? "active" : ""}
       onClick={() => navigate(target)}
       aria-label={label}
@@ -72,6 +74,10 @@ export function Sidebar() {
       </nav>
       <nav className="secondary-navigation" aria-label="设置">
         {button("settings", "设置", GearSixIcon)}
+        <button onClick={startGuide} aria-label="使用指南" title="使用指南">
+          <QuestionIcon size={20} aria-hidden />
+          <span className="nav-label">使用指南</span>
+        </button>
       </nav>
       <div className="sidebar-foot" title="资料保存在当前电脑">
         <DatabaseIcon size={18} aria-hidden />

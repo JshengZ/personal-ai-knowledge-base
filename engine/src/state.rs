@@ -150,6 +150,9 @@ impl AppState {
             bail!("当前连接无权读取这份资料");
         }
         let root = self.store.root(&document.root_id)?;
+        if !crate::indexer::eligible(std::path::Path::new(&document.path), &root, self)? {
+            bail!("这份资料已被排除，不再允许检索或读取");
+        }
         let path = Path::new(&document.path)
             .canonicalize()
             .context("原文件已移走或暂不可用")?;
@@ -219,17 +222,33 @@ impl AppState {
     }
 
     pub fn indexing_allowed(&self) -> bool {
-        if !self
-            .store
-            .counts()
-            .is_ok_and(|counts| counts.get("initialized") == Some(&1))
-        {
+        self.reconciliation_allowed()
+            && self.store.settings().is_ok_and(|settings| {
+                crate::storage::require_capacity(&self.home, &settings, 64 * 1024 * 1024).is_ok()
+            })
+    }
+
+    /// Deletions and exclusions must still reconcile when growth is blocked.
+    pub fn reconciliation_allowed(&self) -> bool {
+        self.cleanup_ready() && self.store.settings().is_ok_and(|settings| !settings.paused)
+    }
+
+    /// Pausing discovery does not cancel already authorized removals. A paused
+    /// interrupted migration is kept unchanged so its ready copy can be reused.
+    pub fn cleanup_allowed(&self) -> bool {
+        self.cleanup_ready()
+            && self.store.settings().is_ok_and(|settings| {
+                !settings.paused || !crate::storage::migration_pending(&self.home)
+            })
+    }
+
+    fn cleanup_ready(&self) -> bool {
+        if self.stopping.load(Ordering::SeqCst) {
             return false;
         }
-        self.store.settings().is_ok_and(|settings| {
-            !settings.paused
-                && crate::storage::require_capacity(&self.home, &settings, 64 * 1024 * 1024).is_ok()
-        })
+        self.store
+            .counts()
+            .is_ok_and(|counts| counts.get("initialized") == Some(&1))
     }
 
     pub fn audit(&self, scope: &Scope, tool: &str, count: usize) {

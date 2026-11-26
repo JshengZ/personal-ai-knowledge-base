@@ -7,7 +7,12 @@ use std::collections::HashMap;
 // of chunks. Legacy databases are backfilled once on a read-only snapshot.
 pub fn ensure(db: &Connection, fresh: bool) -> Result<()> {
     db.execute_batch(
-        "CREATE TABLE IF NOT EXISTS row_counts(name TEXT PRIMARY KEY,value INTEGER NOT NULL);",
+        "CREATE TABLE IF NOT EXISTS row_counts(name TEXT PRIMARY KEY,value INTEGER NOT NULL);
+         CREATE TABLE IF NOT EXISTS cleanup_jobs(
+             document_id TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+             version TEXT NOT NULL,
+             root_id TEXT NOT NULL
+         );",
     )?;
     db.execute(
         "INSERT OR IGNORE INTO row_counts(name,value) VALUES('initialized',?1)",

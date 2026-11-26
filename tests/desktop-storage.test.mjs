@@ -88,6 +88,23 @@ test(
       await page.setViewportSize({ width: 1536, height: 1024 });
       await page.getByRole("button", { name: "设置", exact: true }).click();
       await page.getByRole("tab", { name: "个性化", exact: true }).click();
+      const readingPicker = page.getByLabel("阅读字体", { exact: true });
+      assert.equal(
+        await page.evaluate(() => CSS.supports("appearance", "base-select")),
+        true,
+      );
+      await readingPicker.click();
+      await page.getByRole("option", { name: "衬线", exact: true }).click();
+      assert.equal(await readingPicker.inputValue(), "serif");
+      await readingPicker.focus();
+      await page.keyboard.press("Space");
+      await page.keyboard.press("ArrowUp");
+      await page.keyboard.press("Enter");
+      assert.equal(
+        await readingPicker.inputValue(),
+        "sans",
+        "themed picker retains keyboard selection",
+      );
       await page.getByRole("radio", { name: "深色", exact: true }).check();
       await until(
         () =>
@@ -181,6 +198,61 @@ test(
         "unsaved-company-model",
         "tab changes preserve unsaved provider fields",
       );
+      const originalModel = (await api("GET", "/state")).settings.chat.model;
+      await page
+        .getByLabel("API Key", { exact: true })
+        .first()
+        .fill("audit-draft-not-a-real-key");
+      await app.evaluate(() => {
+        const originalFetch = globalThis.fetch;
+        globalThis.__pkbSecretWrites = 0;
+        globalThis.fetch = async (input, options) => {
+          if (String(input).endsWith("/api/settings") && options?.body) {
+            const patch = JSON.parse(options.body);
+            if (patch.keys && Object.hasOwn(patch.keys, "chat")) {
+              globalThis.__pkbSecretWrites++;
+              return new Response(
+                JSON.stringify({
+                  error: "Test blocked an unintended credential write",
+                }),
+                {
+                  status: 400,
+                  headers: { "Content-Type": "application/json" },
+                },
+              );
+            }
+          }
+          return originalFetch(input, options);
+        };
+      });
+      await page.getByRole("tab", { name: "存储与备份", exact: true }).click();
+      await page.getByLabel("索引容量上限（GB）", { exact: true }).fill("11");
+      await page
+        .getByRole("button", { name: "保存存储限制", exact: true })
+        .click();
+      await until(
+        async () => (await api("GET", "/state")).settings.max_index_gb === 11,
+        "storage group saves independently",
+      );
+      assert.equal(
+        (await api("GET", "/state")).settings.chat.model,
+        originalModel,
+      );
+      assert.equal(
+        await app.evaluate(() => globalThis.__pkbSecretWrites),
+        0,
+        "storage save never submits draft model credentials",
+      );
+      await page.getByRole("tab", { name: "模型与检索", exact: true }).click();
+      assert.equal(
+        await page.getByLabel("模型名称", { exact: true }).first().inputValue(),
+        "unsaved-company-model",
+      );
+      assert.equal(
+        await page.getByLabel("API Key", { exact: true }).first().inputValue(),
+        "audit-draft-not-a-real-key",
+      );
+      await page.getByLabel("API Key", { exact: true }).first().fill("");
       await page.getByLabel("模型名称", { exact: true }).first().fill("");
       await page.getByRole("tab", { name: "个性化", exact: true }).click();
       await page
@@ -264,10 +336,30 @@ test(
         density: "compact",
         sidebar_collapsed: true,
       });
+      await app.evaluate(({ app, dialog }) => {
+        const originalFetch = globalThis.fetch;
+        globalThis.__pkbMigrationQuitNotices = 0;
+        globalThis.fetch = async (input, options) => {
+          if (String(input).endsWith("/api/shutdown"))
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+          return originalFetch(input, options);
+        };
+        dialog.showMessageBox = async (options) => {
+          if (options.title === "正在迁移数据")
+            globalThis.__pkbMigrationQuitNotices++;
+          return { response: 0 };
+        };
+      });
       const closed = app.waitForEvent("close");
       await modal
         .getByRole("button", { name: "迁移并重启", exact: true })
         .click();
+      await app.evaluate(({ app }) => app.quit());
+      assert.equal(
+        await app.evaluate(() => globalThis.__pkbMigrationQuitNotices),
+        1,
+        "normal quit waits for migration instead of orphaning its child",
+      );
       await closed;
       const chosen = join(destination, "Personal-Knowledge");
       await access(join(chosen, "knowledge.sqlite"));

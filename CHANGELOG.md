@@ -5,6 +5,28 @@
 - Simplified the desktop to one navigation rail and consistent forms, tables, dialogs and controls. Added persistent light/dark/system appearance, preset/custom accents, four font sizes, reading fonts, density and sidebar preferences; removed the sample-data entry point and generator.
 - 客户端采用单层侧栏与统一的表单、列表、弹窗和控件；新增可保存的明亮／深色／跟随系统、预设／自定义强调色、四档字号、阅读字体、密度及侧栏偏好；移除示例资料入口及生成能力。
 
+### Built-in guide / 内置使用导览
+
+- Optional first-run guide over eight real interface steps, with automatic navigation, Previous/Next, Skip, close and Escape. Replay from the sidebar or Settings; restore the previous view, scroll and drafts. Completion/dismissal persists independently of provider and credential drafts, with visible save retry.
+- 首次启动提供可跳过的 8 步真实界面导览，支持自动导航、上一步／下一步、跳过、关闭和 Escape；侧栏与设置可重放，退出还原原位置与草稿；完成／跳过记录独立保存并提供失败重试。
+- Fresh libraries remain empty; the guide does not create sample data, invoke models, or configure clients. 新安装保持空知识库，导览不生成示例、不调用模型或自动配置客户端。
+
+### Reliability fixes / 可靠性修复
+
+- Theme expanded dropdowns, selection and keyboard focus with the app palette; normalize action heights, spacing and dialog footers; truncate long selected values while preserving full menu labels; replace decorative copy with direct instructions.
+- Match settings saves to their section, preserving unrelated draft providers and credentials.
+- Restrict short request timeouts to reads; await definite outcomes for model summaries and atomic restores. Validate backups and import data into a canonical schema before changing the current library.
+- Account for reusable database pages; process removals in bounded durable jobs even when growth is blocked. Preserve warmed local-model children across cancelled queries and separate vectors for changed API routes.
+- Journal interrupted migrations, reuse verified copies on explicit retry, preserve unknown/changed copies, and keep a normal quit from interrupting migration.
+- Build metadata distinguishes unpublished working-tree packages from artifacts built from an exact source commit.
+
+- 展开选单、选中及键盘焦点使用统一主题；规范按钮高度、间距与弹窗操作区；长名称省略显示并在菜单内保留全文；移除装饰性文案。
+- 设置按分组保存，保留其他分组的模型与凭据草稿。
+- 短超时仅用于读取；摘要与恢复等待确定结果。备份须先校验并导入标准结构，再替换当前库。
+- 容量统计区分可复用页；禁止新增索引时仍以持久化小批任务清理已移除资料。本地模型在查询取消后继续预热，更换 API 路径隔离旧向量。
+- 迁移增加作业记录，明确重试可复用完整副本；保留未知或已变化副本，正常退出等待迁移结束。
+- 构建记录区分未发布工作区安装包和来自确定源码提交的安装包。
+
 ### English
 
 - Windows assisted installer with program-folder selection; independent data-location setup and verified migration with preserved agent tokens/keychain namespace and safe old-file cleanup.

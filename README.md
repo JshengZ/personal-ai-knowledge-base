@@ -10,16 +10,16 @@ A local-first desktop knowledge base that gives MCP agents access to your projec
 
 **Install the desktop app. No terminal, Docker, Python, or separate model setup is required for normal use.** The current desktop interface is in Simplified Chinese; documentation is available in English and Chinese.
 
-![Desktop workspace with synthetic example documents](docs/images/desktop.png)
+![Empty knowledge-base workspace](docs/images/desktop.png)
 
 Light, dark and system appearance, custom accents, font sizes and density. [Appearance settings](docs/images/appearance.png) preview immediately and save locally.
 
 ## Download
 
-| Platform | Installer | Status |
-| --- | --- | --- |
-| macOS, Intel x64 | [Download DMG](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.1/Personal-Knowledge-1.0.1-mac-x64.dmg) | Packaged application tested on macOS 14.6.1 |
-| Windows, x64 | [Download installer](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.1/Personal-Knowledge-1.0.1-win-x64.exe) | Cross-built; target workstation acceptance remains pending |
+| Platform         | v1.0.1 installer                                                                                                                          | Status                                                    |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| macOS, Intel x64 | [Download DMG](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.1/Personal-Knowledge-1.0.1-mac-x64.dmg)       | Packaged application tested on macOS 14.6.1               |
+| Windows, x64     | [Download installer](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.1/Personal-Knowledge-1.0.1-win-x64.exe) | Native CI and target-environment status: see verification |
 
 [All releases](https://github.com/JshengZ/personal-ai-knowledge-base/releases) · [Checksums](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.1/SHA256SUMS.txt) · [Release notes](CHANGELOG.md)
 
@@ -27,13 +27,27 @@ Installers bundle the embedding model and English/Chinese OCR data, so downloads
 
 ## Get started
 
+First launch offers an optional, replayable guide on the real interface. New installations contain no sample projects or documents.
+
 1. On macOS, open the DMG and drag **个人知识库** into Applications. On Windows, use the installer wizard to choose the program folder and install for the current user.
-2. On first launch, choose the knowledge data location (separate from the program folder), then select a project or document folder.
-3. For answers and project summaries inside the app, enter your organization's model API URL, model name, and credentials in the setup wizard or Settings. This is optional when your MCP agent already has its own chat model.
+2. On first launch, choose the knowledge data location (separate from the program folder), then view or skip the optional guide. Add a project or document folder from Sources.
+3. For answers and project summaries inside the app, enter your organization's model API URL, model name, and credentials in Settings. This is optional when your MCP agent already has its own chat model.
 4. Open **Agent 连接**, choose which projects to share, and select **一键配置 ZCode**. Existing ZCode settings are preserved and backed up. Other clients can use generated JSON, Codex TOML, or local Streamable HTTP settings.
 5. Start a new agent conversation and ask a project question. Check that it calls the knowledge tools and cites the original sources.
 
 Files inside selected folders stay up to date after edits, renames, and deletions. Closing the window keeps indexing in the tray. Use the tray or app menu to quit. Each colleague installs their own independent knowledge base and chooses their own folders and credentials.
+
+## Interface and built-in guide
+
+New libraries are empty. The optional guide walks through eight real screens, with Next, Previous, Skip and Escape; replay it from the sidebar or Settings. Unsaved form drafts and the previous view are retained.
+
+![Optional first-run guide](docs/images/onboarding.png)
+
+![Appearance settings](docs/images/appearance.png)
+
+[Guide on the MCP page](docs/images/onboarding-mcp.png) · [Storage and capacity](docs/images/storage.png) · [Themed dropdown](docs/images/controls.png) · [Connection permissions](docs/images/actions.png)
+
+Screenshots show the actual Electron interface in an isolated empty library. Path labels are generalized; no personal data or credentials are included.
 
 ## Features
 
@@ -52,14 +66,14 @@ Supported inputs include PDF, DOCX, PPTX, XLSX, CSV/TSV, Markdown, text, common 
 
 ## Models and data flow
 
-| Stage | Implementation |
-| --- | --- |
-| Parsing / OCR | Local Node worker, PDF.js, Office parsers, Tesseract.js |
-| Full-text retrieval | SQLite FTS5 with Jieba segmentation |
-| Embeddings | Configured organization API, or bundled **Qwen3-Embedding-0.6B Q8_0** via llama.cpp; 1024 dimensions locally |
-| Retrieval / reranking | Scoped candidates, RRF fusion, optional organization reranking API |
-| In-app answers / summaries | Your configured OpenAI-compatible or Anthropic Messages API |
-| Agent answers | The model already configured in your MCP client |
+| Stage                      | Implementation                                                                                               |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Parsing / OCR              | Local Node worker, PDF.js, Office parsers, Tesseract.js                                                      |
+| Full-text retrieval        | SQLite FTS5 with Jieba segmentation                                                                          |
+| Embeddings                 | Configured organization API, or bundled **Qwen3-Embedding-0.6B Q8_0** via llama.cpp; 1024 dimensions locally |
+| Retrieval / reranking      | Scoped candidates, RRF fusion, optional organization reranking API                                           |
+| In-app answers / summaries | Your configured OpenAI-compatible or Anthropic Messages API                                                  |
+| Agent answers              | The model already configured in your MCP client                                                              |
 
 No local chat LLM is required. The bundled embedding model is approximately 610 MiB and runs on CPU. If a configured API fails, the app reports the failure and preserves full-text retrieval; it does not silently send documents to another provider.
 
@@ -75,12 +89,12 @@ Organization-model calls and MCP clients receive the content you authorize for t
 
 ## Documentation
 
-| Topic | English | 简体中文 |
-| --- | --- | --- |
-| Install, configure models, connect agents | [User guide](docs/user-guide.md) | [使用指南](docs/user-guide.zh-CN.md) |
-| Architecture and extension points | [Architecture](docs/architecture.md) | [架构设计](docs/architecture.zh-CN.md) |
-| Build, test, and release | [Development](docs/development.md) | [开发与发布](docs/development.zh-CN.md) |
-| Verification and current boundaries | [Verification](docs/verification.md) | [验收记录](docs/verification.zh-CN.md) |
+| Topic                                     | English                              | 简体中文                                |
+| ----------------------------------------- | ------------------------------------ | --------------------------------------- |
+| Install, configure models, connect agents | [User guide](docs/user-guide.md)     | [使用指南](docs/user-guide.zh-CN.md)    |
+| Architecture and extension points         | [Architecture](docs/architecture.md) | [架构设计](docs/architecture.zh-CN.md)  |
+| Build, test, and release                  | [Development](docs/development.md)   | [开发与发布](docs/development.zh-CN.md) |
+| Verification and current boundaries       | [Verification](docs/verification.md) | [验收记录](docs/verification.zh-CN.md)  |
 
 [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Code of conduct](CODE_OF_CONDUCT.md) · [Changelog](CHANGELOG.md)
 

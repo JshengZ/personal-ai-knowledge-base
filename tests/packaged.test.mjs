@@ -95,14 +95,18 @@ test(
           filePaths: [path],
         });
       }, first);
-      await page.getByRole("button", { name: "选择目录", exact: true }).click();
+      await page.getByRole("button", { name: "跳过导览", exact: true }).click();
       await page
+        .getByRole("button", { name: "添加资料目录", exact: true })
+        .click();
+      const initialFolder = page.getByRole("dialog", { name: "添加资料目录" });
+      await initialFolder
+        .getByRole("button", { name: "选择目录", exact: true })
+        .click();
+      await initialFolder
         .getByRole("button", { name: "加入知识库", exact: true })
         .click();
-      await page.getByRole("button", { name: "稍后配置", exact: true }).click();
-      await page
-        .getByRole("button", { name: "进入知识库", exact: true })
-        .click();
+      await initialFolder.waitFor({ state: "hidden" });
       const api = (method, path, body) =>
         page.evaluate(
           ({ method, path, body }) =>

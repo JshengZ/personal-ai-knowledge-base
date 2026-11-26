@@ -1,6 +1,6 @@
 # 界面验收 / Design QA — 1.0.1
 
-2026-11-26。本地 Mac / Electron / Chrome 已通过；Windows 实机视觉验收仍需在目标电脑完成。所有公开截图来自隔离的虚构验收资料，不包含个人路径、公司文档或凭据。
+2026-11-26。本地 Mac / Electron / Chrome 已通过；Windows 实机视觉验收仍需在目标电脑完成。当前实际界面截图来自隔离空知识库，路径标签已泛化，不包含个人路径、公司文档或凭据。
 
 ## 设计依据 / Design basis
 
@@ -13,15 +13,15 @@
 
 ## 对照记录 / Fidelity ledger
 
-| 比较项 / Point | 参考与实现 / Evidence and result |
-| --- | --- |
-| 布局 / Layout | 单层侧栏、宽主区域与开放的资料列表；移除旧的项目次级侧栏。资料范围放在列表与检索控件旁。 |
-| 颜色 / Palette | 默认真白背景、冷灰侧栏和细边框，黑灰文字；独立的深色主题。预设与自定义强调色在按钮、焦点和选中状态应用；自定义颜色计算可读前景色。 |
-| 字体 / Typography | 系统无衬线，正文与控件采用统一比例，默认 14 px、标题 24 px；13/14/16/18 px 四档全部生效。阅读衬线单独控制原文、回答和项目正文。 |
-| 间距 / Spacing | 统一 40 px 标准控件、10 px 圆角、分隔线与表单对齐；紧凑密度控制行高和字段间距。弹窗统一标题、内容、操作区与滚动范围。 |
-| 图标 / Icons | Phosphor 正常线宽；侧栏与按钮图标对齐。无装饰大图、AI 光效或静态假按钮。外观缩略图为实际的单选控件。 |
-| 文案 / Copy | 主标题、导航、设置分组与设计清单对照；文件、进度和时间来自真实的隔离测试数据。保留“处理详情”以承载队列、失败与权限说明。 |
-| 窄屏 / Responsive | 侧栏缩为带名称和提示的图标；表单和表格重排。修复特大字号下的长模型名称横向溢出，390 px 无整页横向滚动。 |
+| 比较项 / Point    | 参考与实现 / Evidence and result                                                                                                                               |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 布局 / Layout     | 单层侧栏、宽主区域与开放的资料列表；移除旧的项目次级侧栏。资料范围放在列表与检索控件旁。                                                                       |
+| 颜色 / Palette    | 默认真白背景、冷灰侧栏和细边框，黑灰文字；独立的深色主题。预设与自定义强调色在按钮、焦点和选中状态应用；自定义颜色计算可读前景色。                             |
+| 字体 / Typography | 系统无衬线，正文与控件采用统一比例，默认 14 px、标题 24 px；13/14/16/18 px 四档全部生效。阅读衬线单独控制原文、回答和项目正文。                                |
+| 间距 / Spacing    | 统一 40 px 标准控件、10 px 圆角、分隔线与表单对齐；紧凑密度控制行高和字段间距。弹窗统一标题、内容、操作区与滚动范围。                                          |
+| 图标 / Icons      | Phosphor 正常线宽；侧栏与按钮图标对齐。无装饰大图、AI 光效或静态假按钮。外观缩略图为实际的单选控件。                                                           |
+| 文案 / Copy       | 移除“工作室”等装饰性文案；空白状态直接说明操作，错误和状态说明保留具体原因。文件、进度和时间来自隔离的虚构测试数据。保留“处理详情”以承载队列、失败与权限说明。 |
+| 窄屏 / Responsive | 侧栏缩为带名称和提示的图标；表单和表格重排。修复特大字号下的长模型名称横向溢出，390 px 无整页横向滚动。                                                        |
 
 可解释的适配：侧栏按简洁性目标采用 224 px，收起为 68 px；默认字号保持可配置的 14 px，而非生成图中偏大的栅格文字。文件数量、格式和同步进度由实际数据决定。主题预览按钮用于检查当前颜色与字号。与设计方向对照检查后，以上适配之外没有已知的布局或交互阻断问题。
 
@@ -36,3 +36,25 @@
 - 源码 UI 验收无相关页面异常或控制台错误；安装包模型、OCR、检索与 MCP 验收见[验证记录](docs/verification.zh-CN.md)。
 
 The implemented UI was inspected against both design references, including layout, palette, typography, spacing, icons, copy and responsive behavior. Functional tests cover saved appearance, recovery from a failed save, restart/migration, unsaved model fields, real search and source dialogs. The local result is verified; native Windows visual differences remain an environment acceptance item.
+
+## 控件与按钮复查 / Controls and actions review
+
+2026-11-26，v1.0.1 控件复查。最新实现在以下细节上覆盖早期概念图：选单使用应用背景、边框、阴影及轻量选中状态；移除叠加的粗焦点框；主题选项、复选框、分段控件和折叠箭头采用统一状态。明确保留键盘焦点，不以移除焦点换取视觉简洁。
+
+- [明亮设置页](docs/images/appearance.png)、[展开选单](docs/images/controls.png)、[Agent 连接权限表单](docs/images/actions.png)为当前实际 UI 的隔离截图。此前并排图与概念图仅表示早期方向，其中旧文案和控件状态不再是实现要求。
+- 1440 / 800 / 640 / 390 px 检查 12 类页面和弹窗，包括设置全部分类、目录管理、项目编辑和连接权限；390 px 使用 18 px 字号。按钮与页面均无横向越界。
+- 主要按钮高度、图标尺寸、操作组间距及弹窗底部按钮对齐。长名称在收起的下拉框内省略，在展开菜单内换行；多行复选项按首行对齐。
+- 原生 select 与 selectedcontent 保留控件语义和键盘行为；鼠标选择、Space / 方向键 / Enter、复选框、深色及自定义强调色、弹窗选单均通过。相关页面与控制台异常为零。
+- 浏览器视觉证据来自已安装 Chrome；Electron 控件和持久化流程另做原生回归。原生 Windows 检查以对应源码和安装包工作流的实际运行记录为准；公司电脑的视觉差异仍需实机验收。
+
+The local post-review UI replaces decorative copy with direct instructions, aligns action groups and dialog footers, and themes expanded native selects and focus states consistently. Twelve page/dialog flows were checked at four widths, including 18 px text at 390 px. Current screenshots supersede legacy concept controls/copy. Target-workstation visual acceptance remains an environment check.
+
+## 可选使用导览 / Optional product guide
+
+首次启动以空知识库为背景展示可跳过的入口。8 个步骤自动导航实际页面并定位真实控件；支持上一步、下一步、跳过、关闭与 Escape。短窗口保留正文阅读空间；无法同时容纳标记与说明时使用居中卡片，保留退出与翻页控件。
+
+隔离 Chrome 流程覆盖 1212／640／390／320 px、明暗主题、14／18 px 字号及保存失败重试。原生 Electron 验证跳过／完成后的重启、8 步无业务写入、表单草稿保留、最小窗口、失败退出与重试，并测试导览访问搜索页后的项目提问。
+
+独立子智能体发现并复测修复了 3 项 P2：缓存搜索页的项目提问状态不同步；并发设置保存覆盖导览标志（真实引擎修复后 600 轮通过）；640×520、18 px、紧凑模式下正文可被挤至 0 高（现有可读居中降级）。另验证目标缺失／迟到、原设置分类、500 px 滚动、草稿及焦点恢复。没有未关闭的可操作发现；未独立验证屏幕阅读器、Windows GUI 或高倍率缩放。
+
+Sources for interaction patterns: [Fluent onboarding](https://fluent2.microsoft.design/onboarding) and [Atlassian Spotlight](https://atlassian.design/components/spotlight/examples). The implementation uses existing React and native browser primitives; it adds no tour dependency or model call. Screenshots and verification correspond to v1.0.1; release artifacts identify their exact source commit.

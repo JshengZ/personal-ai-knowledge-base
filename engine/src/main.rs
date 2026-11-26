@@ -8,6 +8,7 @@ mod knowledge;
 mod logging;
 mod mcp;
 mod models;
+mod onboarding;
 mod parser;
 mod processes;
 mod progress;
@@ -17,6 +18,8 @@ mod storage;
 mod store;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod review_regressions;
 mod types;
 
 use anyhow::{bail, Context, Result};
@@ -154,6 +157,7 @@ async fn serve(home: PathBuf, runtime: RuntimeConfig) -> Result<()> {
         if let Err(error) = crate::counters::backfill(&counting.store) {
             tracing::warn!(%error,"progress counter initialization interrupted");
         }
+        counting.wake.notify_one();
     });
     let runtime_handle = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || runtime_handle.block_on(indexer::run(worker)));

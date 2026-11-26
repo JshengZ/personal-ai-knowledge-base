@@ -157,6 +157,7 @@ export interface ActivityEvent {
 }
 export interface Snapshot {
   version: string;
+  onboarding?: { version: number; status: "new" | "skipped" | "completed" };
   roots: Root[];
   projects: Project[];
   documents: Document[];
@@ -174,6 +175,7 @@ export interface Snapshot {
     indexing: number;
     initialized: boolean;
     discovered: number;
+    cleaning?: number;
   };
   settings: Settings;
   events: ActivityEvent[];
@@ -206,6 +208,8 @@ export interface Snapshot {
   storage: {
     available_bytes: number;
     index_bytes: number;
+    quota_bytes?: number;
+    reusable_bytes?: number;
     wal_bytes: number;
     reserve_bytes: number;
     limit_bytes: number;

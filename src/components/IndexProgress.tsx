@@ -46,7 +46,7 @@ export function IndexProgress({
   return (
     <section className="index-progress" aria-label="索引处理进度">
       <h2 className="sr-only">处理进度</h2>
-      <div className="index-progress-grid">
+      <div className="index-progress-grid" data-guide="index-progress">
         <div className="index-progress-step">
           {data.scanning ? (
             <CircleNotchIcon className="spin" size={22} aria-hidden />
@@ -116,6 +116,11 @@ export function IndexProgress({
           </div>
         </div>
       </div>
+      {(data.stats.cleaning ?? 0) > 0 && (
+        <p role="status">
+          正在清理 {number(data.stats.cleaning ?? 0)} 份已移除资料。
+        </p>
+      )}
       {semantic.estimated_seconds !== null &&
         semantic.completed_vectors < semantic.total_chunks && (
           <p className="muted">

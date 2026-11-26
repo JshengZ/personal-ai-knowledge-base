@@ -95,3 +95,78 @@ for(const forced of [false,true])test(forced?'Windows Job Object terminates pars
     await stopped(service.child);await until(()=>!alive(parserPid),'parser exits and releases handles',5000);
   }finally{service.child.kill();if(parserPid&&alive(parserPid))process.kill(parserPid,'SIGKILL');await rm(directory,{recursive:true,force:true});}
 });
+
+test(
+  "a company-model summary longer than twelve seconds returns its committed result, not a false timeout",
+  { timeout: 40000 },
+  async () => {
+    const { directory, home } = await fixture();
+    const model = createServer(async (request, response) => {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      const evidence = JSON.parse(body.messages.at(-1).content);
+      await delay(13500);
+      response.setHeader("Content-Type", "application/json");
+      response.end(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  goal: "SLOW_SUMMARY_COMMITTED",
+                  approach: "Use cited evidence",
+                  decisions: [],
+                  source_ids: evidence.sources.map((source) => source.document_id),
+                  memories: [],
+                }),
+              },
+            },
+          ],
+        }),
+      );
+    });
+    await new Promise((done) => model.listen(0, "127.0.0.1", done));
+    await runtime(home);
+    const service = await start(home);
+    try {
+      await service.api("PATCH", "/settings", {
+        embedding_mode: "disabled",
+        auto_summarize: false,
+        chat: {
+          base_url: "http://127.0.0.1:" + model.address().port + "/v1",
+          model: "slow-summary",
+        },
+      });
+      const sources = join(directory, "summary-source");
+      await mkdir(sources);
+      await writeFile(
+        join(sources, "evidence.md"),
+        "# Slow summary evidence\nA long company-model request must have a definite outcome.",
+      );
+      await service.api("POST", "/roots", { path: sources, policy: "agents" });
+      const project = await until(async () => {
+        const state = await service.api("GET", "/state");
+        return state.documents[0]?.status === "ready" && state.projects[0];
+      }, "summary source is ready");
+      const began = Date.now();
+      await service.api("POST", "/projects/" + project.id + "/summarize", {});
+      assert.ok(
+        Date.now() - began >= 13000,
+        "the test really passes the old deadline",
+      );
+      assert.equal(
+        (await service.api("GET", "/state")).projects.find(
+          (item) => item.id === project.id,
+        ).goal,
+        "SLOW_SUMMARY_COMMITTED",
+      );
+    } finally {
+      await service.api("POST", "/shutdown", {}).catch(() => {});
+      await stopped(service.child).catch(() => service.child.kill());
+      model.closeAllConnections();
+      await new Promise((done) => model.close(done));
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);

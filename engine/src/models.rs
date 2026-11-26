@@ -26,6 +26,8 @@ struct LocalEmbedding {
     child: Child,
     port: u16,
     threads: usize,
+    ready: bool,
+    started: std::time::Instant,
 }
 
 impl Models {
@@ -225,11 +227,27 @@ impl Models {
 
     pub fn embedding_model(&self, settings: &Settings) -> String {
         if !settings.embedding.base_url.is_empty() && settings.embedding_mode != "local" {
-            format!(
+            let legacy = format!(
                 "remote:{}:{}",
                 settings.embedding.base_url.trim_end_matches('/'),
                 settings.embedding.model
-            )
+            );
+            let mut default = settings.embedding.clone();
+            default.endpoint.clear();
+            let endpoint = Self::endpoint(&settings.embedding, "embeddings").unwrap_or_default();
+            if settings.embedding.protocol == "openai"
+                && Self::endpoint(&default, "embeddings").is_ok_and(|value| value == endpoint)
+            {
+                // Preserve compatible default-route vectors on upgrade. A
+                // custom route must not silently inherit another route's space.
+                legacy
+            } else {
+                let digest = blake3::hash(
+                    format!("{}\n{}", endpoint, settings.embedding.protocol).as_bytes(),
+                )
+                .to_hex();
+                format!("{legacy}:endpoint={}", &digest[..16])
+            }
         } else {
             "local:Qwen3-Embedding-0.6B-Q8_0:v1".into()
         }
@@ -253,63 +271,81 @@ impl Models {
         };
         let mut local = self.local.lock().await;
         if let Some(server) = local.as_mut() {
-            if server.child.try_wait()?.is_none() && server.threads == threads {
+            if server.child.try_wait()?.is_none() && server.threads == threads && server.ready {
                 return Ok(server.port);
             }
         }
-        if let Some(mut previous) = local.take() {
-            let _ = previous.child.kill().await;
+        let reusable = local.as_mut().is_some_and(|server| {
+            server.child.try_wait().is_ok_and(|status| status.is_none())
+                && server.threads == threads
+        });
+        if !reusable {
+            if let Some(mut previous) = local.take() {
+                let _ = previous.child.kill().await;
+            }
+            let (binary, model) = self.local_assets().context(
+                "本地检索模型资源尚未安装，请在设置中配置公司 Embedding 接口或使用完整安装包",
+            )?;
+            let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+            let port = listener.local_addr()?.port();
+            drop(listener);
+            let mut command = tokio::process::Command::new(binary);
+            command.arg("--model").arg(model).args([
+                "--host",
+                "127.0.0.1",
+                "--port",
+                &port.to_string(),
+                "--embeddings",
+                "--pooling",
+                "last",
+                "--ctx-size",
+                "4096",
+                "--parallel",
+                "1",
+                "--batch-size",
+                "512",
+                "--ubatch-size",
+                "256",
+                "--cache-ram",
+                "0",
+                "--n-gpu-layers",
+                "0",
+                "--threads",
+                &threads.to_string(),
+                "--threads-batch",
+                &threads.to_string(),
+            ]);
+            command
+                .current_dir(&self.temporary)
+                .env("TMPDIR", &self.temporary)
+                .env("TEMP", &self.temporary)
+                .env("TMP", &self.temporary)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .kill_on_drop(true);
+            #[cfg(windows)]
+            command.creation_flags(0x08004000);
+            let child = command.spawn().context("无法启动随包检索模型")?;
+            crate::processes::track(child.id().context("模型进程编号不可用")?)?;
+            // Own the process before the first await. A bounded search can return
+            // FTS while this same child continues warming up; cancelling the caller
+            // must not kill and restart a slow model on every subsequent query.
+            *local = Some(LocalEmbedding {
+                child,
+                port,
+                threads,
+                ready: false,
+                started: std::time::Instant::now(),
+            });
         }
-        let (binary, model) = self.local_assets().context(
-            "本地检索模型资源尚未安装，请在设置中配置公司 Embedding 接口或使用完整安装包",
-        )?;
-        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-        let port = listener.local_addr()?.port();
-        drop(listener);
-        let mut command = tokio::process::Command::new(binary);
-        command.arg("--model").arg(model).args([
-            "--host",
-            "127.0.0.1",
-            "--port",
-            &port.to_string(),
-            "--embeddings",
-            "--pooling",
-            "last",
-            "--ctx-size",
-            "4096",
-            "--parallel",
-            "1",
-            "--batch-size",
-            "512",
-            "--ubatch-size",
-            "256",
-            "--cache-ram",
-            "0",
-            "--n-gpu-layers",
-            "0",
-            "--threads",
-            &threads.to_string(),
-            "--threads-batch",
-            &threads.to_string(),
-        ]);
-        command
-            .current_dir(&self.temporary)
-            .env("TMPDIR", &self.temporary)
-            .env("TEMP", &self.temporary)
-            .env("TMP", &self.temporary)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-        #[cfg(windows)]
-        command.creation_flags(0x08004000);
-        let mut child = command.spawn().context("无法启动随包检索模型")?;
-        crate::processes::track(child.id().context("模型进程编号不可用")?)?;
+        let port = local.as_ref().unwrap().port;
         for _ in 0..180 {
             if self.stopping.load(Ordering::SeqCst) {
                 bail!("模型启动已取消");
             }
-            if child.try_wait()?.is_some() {
+            if local.as_mut().unwrap().child.try_wait()?.is_some() {
+                local.take();
                 bail!("本地检索模型启动失败，请检查运行资源和 CPU 支持情况");
             }
             if let Ok(response) = self
@@ -320,15 +356,20 @@ impl Models {
                 .await
             {
                 if response.status().is_success() {
-                    *local = Some(LocalEmbedding {
-                        child,
-                        port,
-                        threads,
-                    });
+                    local.as_mut().unwrap().ready = true;
                     return Ok(port);
                 }
             }
+            // A cancelled caller may return long before the child becomes
+            // healthy. Check readiness first even on a much later query; age
+            // alone must not kill a model that finished warming while idle.
+            if local.as_ref().unwrap().started.elapsed() > Duration::from_secs(90) {
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        if let Some(mut failed) = local.take() {
+            let _ = failed.child.kill().await;
         }
         bail!("本地检索模型启动超时")
     }
@@ -462,6 +503,24 @@ impl Models {
     pub fn request_stop(&self) {
         self.stopping.store(true, Ordering::SeqCst);
     }
+}
+
+#[cfg(test)]
+pub(crate) async fn unobserved_model_port_for_test(models: &Models) -> u16 {
+    let local = models.local.lock().await;
+    let local = local.as_ref().expect("the cancelled query retained its child");
+    assert!(!local.ready);
+    local.port
+}
+
+#[cfg(test)]
+pub(crate) async fn age_unobserved_model_for_test(models: &Models) {
+    let mut local = models.local.lock().await;
+    let local = local
+        .as_mut()
+        .expect("the cancelled query retained its child");
+    assert!(!local.ready);
+    local.started = std::time::Instant::now() - Duration::from_secs(91);
 }
 
 pub fn structured_json(text: &str) -> Result<Value> {

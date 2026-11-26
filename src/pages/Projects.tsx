@@ -39,7 +39,7 @@ export function Projects() {
   if (!project)
     return (
       <Empty
-        title="从一个项目开始"
+        title="暂无项目"
         action={
           <button className="primary" onClick={addRoot}>
             <PlusIcon size={17} />
@@ -47,7 +47,7 @@ export function Projects() {
           </button>
         }
       >
-        选择你的项目或文档目录，资料会在后台持续更新。
+        添加资料目录后，程序会自动识别项目。
       </Empty>
     );
   const documents =
@@ -106,7 +106,7 @@ export function Projects() {
             {project.goal ? (
               <p>{project.goal}</p>
             ) : (
-              <p className="muted">补充项目目标，或让公司模型根据资料整理。</p>
+              <p className="muted">可手动填写，或使用公司模型生成。</p>
             )}
           </section>
           <section>
@@ -129,9 +129,7 @@ export function Projects() {
                 )}
               </p>
             ) : (
-              <p className="muted">
-                项目资料就绪后，可以生成带依据的方案摘要。
-              </p>
+              <p className="muted">暂无方案摘要。</p>
             )}
           </section>
           <section>
@@ -146,7 +144,7 @@ export function Projects() {
                 ))}
               </ol>
             ) : (
-              <p className="muted">你可以手动记录，或从项目资料中整理。</p>
+              <p className="muted">暂无决策记录。</p>
             )}
           </section>
           <div className="brief-actions">

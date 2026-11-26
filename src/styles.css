@@ -98,15 +98,7 @@ button:disabled {
   cursor: default;
   opacity: 0.5;
 }
-button:focus-visible,
-a:focus-visible,
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible,
-summary:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-}
+
 button svg {
   flex-shrink: 0;
 }
@@ -136,13 +128,7 @@ textarea {
   resize: vertical;
   line-height: 1.75;
 }
-input[type="checkbox"] {
-  width: 1.214rem;
-  height: 1.214rem;
-  min-height: 1.214rem;
-  accent-color: var(--accent);
-  flex: 0 0 auto;
-}
+
 label {
   display: flex;
   flex-direction: column;
@@ -151,7 +137,11 @@ label {
   line-height: 1.6;
   min-width: 0;
 }
-p, small, summary { overflow-wrap: anywhere; }
+p,
+small,
+summary {
+  overflow-wrap: anywhere;
+}
 fieldset {
   border: 0;
   padding: 0;
@@ -227,14 +217,25 @@ small,
 }
 .icon-button {
   padding: 0.5rem;
-  min-width: 2.571rem;
-  min-height: 2.571rem;
+  width: var(--control-height);
+  min-width: var(--control-height);
+  height: var(--control-height);
+  min-height: var(--control-height);
 }
 .actions {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 0.714rem;
+}
+.actions > button {
+  min-height: var(--control-height);
+  max-width: 100%;
+}
+.actions > button svg,
+button.primary > svg {
+  width: 1.143rem;
+  height: 1.143rem;
 }
 .danger-action,
 .error-text,
@@ -277,6 +278,9 @@ small,
   background: var(--sidebar);
   padding: 1.5rem 0.85rem 1.25rem;
   min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 .sidebar-brand-row {
   display: flex;
@@ -796,9 +800,7 @@ small,
   padding: 0.4rem 0.45rem 0.4rem 1.25rem;
   background: var(--paper);
 }
-.question-bar:focus-within {
-  border-color: var(--accent);
-}
+
 .question-bar input {
   flex: 1;
   width: 0;
@@ -841,7 +843,7 @@ small,
 }
 .search-options select {
   font-size: 0.929rem;
-  max-width: 18rem;
+  max-width: min(18rem, 100%);
 }
 .checkbox-label,
 .switch-label {
@@ -1187,17 +1189,7 @@ small,
   align-items: center;
   cursor: pointer;
 }
-.theme-option:has(input:checked) {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
-}
-.theme-option:has(input:focus-visible),
-.accent-option:has(input:focus-visible),
-.segmented label:has(input:focus-visible) {
-  outline: 2px solid var(--accent);
-  outline-offset: 4px;
-  border-radius: var(--radius);
-}
+
 .theme-option:hover {
   background: var(--hover);
 }
@@ -1280,10 +1272,7 @@ small,
   align-items: center;
   justify-content: center;
 }
-.accent-option:has(input:checked) .color-swatch {
-  outline: 1px solid var(--swatch);
-  outline-offset: 3px;
-}
+
 .custom-color-control {
   position: relative;
   display: flex;
@@ -1309,10 +1298,7 @@ small,
   cursor: pointer;
   min-height: 0;
 }
-.custom-color-control:has(input:focus-visible) {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-}
+
 .custom-color-dot {
   display: block;
   width: 0.7rem;
@@ -1341,11 +1327,7 @@ small,
   border-radius: calc(var(--radius) - 2px);
   white-space: nowrap;
 }
-.segmented label:has(input:checked) > span {
-  box-shadow: inset 0 0 0 1.5px var(--accent);
-  color: var(--accent);
-  font-weight: 550;
-}
+
 .segmented label:hover > span {
   background: var(--hover);
 }
@@ -1466,11 +1448,17 @@ input.switch-input {
 }
 .modal-footer {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 0.85rem;
   padding-top: 1.5rem;
   margin-top: 1.5rem;
   border-top: 1px solid var(--line);
+}
+.modal-footer > button {
+  min-width: 6rem;
+  max-width: 100%;
 }
 .input-action {
   display: flex;
@@ -1684,13 +1672,6 @@ details.notice summary {
   gap: 1.5rem;
   flex-wrap: wrap;
   margin-top: 2rem;
-}
-.welcome-footer {
-  margin-top: auto;
-  border-top: 1px solid var(--line);
-  padding-top: 1.25rem;
-  font-size: 0.857rem;
-  color: var(--muted);
 }
 .welcome-model {
   display: grid;

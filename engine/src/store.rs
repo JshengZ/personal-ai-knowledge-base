@@ -378,6 +378,12 @@ impl Store {
                 params![rowid,chunk.id,chunk.document_id,chunk.ordinal,chunk.text,serde_json::to_string(&chunk.location)?,terms])?;
         }
         transaction.execute("INSERT INTO metadata(key,value) VALUES('chunk_high_water',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [rowid.to_string()])?;
+        // A re-index (possibly under a newly added root) supersedes an older
+        // deferred removal for the same path/document id, even at the same hash.
+        transaction.execute(
+            "DELETE FROM cleanup_jobs WHERE document_id=?1",
+            [&document.id],
+        )?;
         transaction.commit()?;
         drop(db);
         self.invalidate_evidence(&document.id, Some(&document.version))?;
@@ -426,13 +432,127 @@ impl Store {
     }
 
     pub fn remove_document(&self, id: &str) -> Result<()> {
+        self.schedule_cleanup_many(&[id.to_string()])?;
+        while !self.remove_document_step(id)? {
+            if self.cancelled.load(Ordering::SeqCst) {
+                bail!("索引清理已停止");
+            }
+        }
+        Ok(())
+    }
+
+    /// A durable tombstone hides the document before asynchronous reclamation.
+    /// Keep the original version/root so a stale job cannot delete a re-index.
+    pub fn schedule_cleanup_many(&self, ids: &[String]) -> Result<()> {
+        let home = self.path.parent().context("知识库路径无效")?;
+        for batch in ids.chunks(32) {
+            self.try_checkpoint()?;
+            crate::storage::require_cleanup_capacity(home, 4 * 1024 * 1024)?;
+            let mut db = self.connection.lock().unwrap();
+            let transaction = db.transaction()?;
+            for id in batch {
+                transaction.execute("INSERT INTO cleanup_jobs(document_id,version,root_id)
+                    SELECT id,version,root_id FROM documents WHERE id=?1
+                    ON CONFLICT(document_id) DO UPDATE SET version=excluded.version,root_id=excluded.root_id
+                    WHERE cleanup_jobs.version!=excluded.version OR cleanup_jobs.root_id!=excluded.root_id", [id])?;
+                transaction.execute("UPDATE documents SET status='removing',data=json_set(data,'$.status','removing','$.error','正在清理已移出资料范围的索引；原始文件不会删除') WHERE id=?1 AND status!='removing'", [id])?;
+            }
+            transaction.commit()?;
+        }
+        Ok(())
+    }
+
+    pub fn next_cleanup(&self) -> Result<Option<String>> {
+        Ok(self
+            .reader()?
+            .query_row(
+                "SELECT document_id FROM cleanup_jobs ORDER BY rowid LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn cancel_cleanup(&self, id: &str) -> Result<()> {
         let mut db = self.connection.lock().unwrap();
         let transaction = db.transaction()?;
-        transaction.execute("DELETE FROM documents WHERE id=?1", [id])?;
+        transaction.execute("DELETE FROM cleanup_jobs WHERE document_id=?1", [id])?;
+        // A partial removal must be parsed again before it becomes searchable.
+        transaction.execute("UPDATE documents SET status='indexing',data=json_set(data,'$.status','indexing','$.error','资料范围已更新，等待重新建立完整索引') WHERE id=?1 AND status='removing'", [id])?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Do not wait for a long reader while holding the shared writer mutex.
+    pub fn try_checkpoint(&self) -> Result<bool> {
+        let db = self.connection.lock().unwrap();
+        db.busy_timeout(Duration::ZERO)?;
+        let checkpoint = db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            row.get::<_, i64>(0)
+        });
+        db.busy_timeout(Duration::from_secs(10))?;
+        Ok(checkpoint? == 0)
+    }
+
+    /// At most 64 chunks / 4 MiB payload per rollback-safe transaction. Large
+    /// legacy documents no longer cascade millions of deletes into a single WAL.
+    pub fn remove_document_step(&self, id: &str) -> Result<bool> {
+        self.try_checkpoint()?;
+        let home = self.path.parent().context("知识库路径无效")?;
+        let mut db = self.connection.lock().unwrap();
+        let transaction = db.transaction()?;
+        let matching = transaction.query_row("SELECT EXISTS(SELECT 1 FROM cleanup_jobs q JOIN documents d ON d.id=q.document_id
+            WHERE q.document_id=?1 AND d.version=q.version AND d.root_id=q.root_id AND d.status='removing')", [id], |row| row.get::<_, bool>(0))?;
+        if !matching {
+            transaction.execute("DELETE FROM cleanup_jobs WHERE document_id=?1", [id])?;
+            transaction.commit()?;
+            return Ok(true);
+        }
+        let (rowids, payload) = {
+            let mut statement = transaction.prepare("SELECT c.rowid,length(CAST(c.text AS BLOB))+length(CAST(c.lexical AS BLOB))+length(CAST(c.location AS BLOB))+COALESCE(length(e.vector),0)
+                FROM chunks c LEFT JOIN embeddings e ON e.chunk_id=c.id WHERE c.document_id=?1 ORDER BY c.ordinal LIMIT 64")?;
+            let mut ids = vec![];
+            let mut payload = 0u64;
+            for row in statement.query_map([id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, u64>(1)?))
+            })? {
+                let (rowid, bytes) = row?;
+                if !ids.is_empty() && payload.saturating_add(bytes) > 4 * 1024 * 1024 {
+                    break;
+                }
+                ids.push(rowid);
+                payload = payload.saturating_add(bytes);
+            }
+            (ids, payload)
+        };
+        let finished = rowids.is_empty();
+        let budget = if finished {
+            1024 * 1024
+        } else {
+            payload.saturating_mul(4).saturating_add(16 * 1024 * 1024)
+        };
+        crate::storage::require_cleanup_capacity(home, budget)?;
+        if finished {
+            transaction.execute("DELETE FROM documents WHERE id=?1", [id])?;
+        } else {
+            transaction.execute("DELETE FROM chunks WHERE document_id=?1 AND rowid IN (SELECT value FROM json_each(?2))", params![id, serde_json::to_string(&rowids)?])?;
+        }
         transaction.commit()?;
         drop(db);
-        self.invalidate_evidence(id, None)?;
-        Ok(())
+        self.try_checkpoint()?;
+        if finished {
+            self.invalidate_evidence(id, None)?;
+        }
+        Ok(finished)
+    }
+
+    pub fn queued_paths(&self, root_id: &str) -> Result<Vec<String>> {
+        let db = self.reader()?;
+        let mut statement = db.prepare("SELECT path FROM jobs WHERE root_id=?1")?;
+        let paths = statement
+            .query_map([root_id], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(paths)
     }
 
     pub fn invalidate_evidence(
@@ -798,7 +918,7 @@ impl Store {
         let count = |name: &str| counts.get(name).copied().unwrap_or(0).max(0);
         Ok(
             json!({"documents":count("documents"),"chunks":count("chunks"),"vectors":count("embeddings"),"pending":count("jobs"),"projects":count("projects"),
-            "ready":count("status:ready"),"errors":count("status:error"),"empty":count("status:empty"),"indexing":count("status:indexing"),"initialized":count("initialized")==1}),
+            "ready":count("status:ready"),"errors":count("status:error"),"empty":count("status:empty"),"indexing":count("status:indexing"),"cleaning":count("status:removing"),"initialized":count("initialized")==1}),
         )
     }
 
