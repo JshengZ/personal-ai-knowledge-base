@@ -2,7 +2,13 @@
 
 [English](verification.md) · [简体中文](verification.zh-CN.md) · [Home](../README.md)
 
-Initial verification date: **2026-11-25**. Version **1.0.0**. Local build host: Intel macOS 14.6.1. Targets: Intel Mac and Windows x64. All fixtures are synthetic and isolated from real personal work folders.
+Initial verification: **1.0.0, 2026-11-25**. Current published verification: **1.0.1, 2026-11-26**. Local build host: Intel macOS 14.6.1. Targets: Intel Mac and Windows x64. All fixtures are synthetic and isolated from real personal work folders.
+
+## Published 1.0.1 evidence
+
+[v1.0.1](https://github.com/JshengZ/personal-ai-knowledge-base/releases/tag/v1.0.1) uses application source [`8e53519888a8`](https://github.com/JshengZ/personal-ai-knowledge-base/commit/8e53519888a8c505b1d1c4a64df46b4fe3cf75c4). Both native platforms passed [source CI](https://github.com/JshengZ/personal-ai-knowledge-base/actions/runs/45837018805) and [packaged-app checks](https://github.com/JshengZ/personal-ai-knowledge-base/actions/runs/45837019823). The [publication run](https://github.com/JshengZ/personal-ai-knowledge-base/actions/runs/45841474706) verifies source, versions, sizes and installer digests before publication. The release's `BUILD-INFO.json` separately identifies the publishing-tool commit.
+
+Windows verified all five fixture documents, six real local vectors, two projects, PDF/OCR/XLSX, hybrid MCP retrieval and memory review, then all three packaged appearance/migration/guide cases with no related console errors. Its standalone 2,392-character embedding took about 158 seconds on the baseline CI CPU; this is a fixture measurement, not a performance guarantee. Mac passed the same package checks. Both package audits report no bundled personal data or credentials. Installers remain unsigned; company API and actual ZCode acceptance remain environment-specific.
 
 ## 1.0.1 local regression results (2026-11-26)
 

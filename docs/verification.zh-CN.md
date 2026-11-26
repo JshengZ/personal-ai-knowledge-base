@@ -2,7 +2,13 @@
 
 # 交付验证记录
 
-验证日期：2026-11-25。构建机器为 Intel Mac，macOS 14.6.1。包版本 1.0.0，目标 Mac x64、Windows x64。测试仅使用独立生成的样例资料，没有扫描或上传真实个人工作目录。
+初次验收：1.0.0，2026-11-25；当前公开版本验收：1.0.1，2026-11-26。本地构建机器为 Intel Mac，macOS 14.6.1，目标 Mac x64、Windows x64。测试仅使用独立生成的合成资料，没有扫描或上传真实个人工作目录。
+
+## 1.0.1 正式发布证据
+
+[v1.0.1](https://github.com/JshengZ/personal-ai-knowledge-base/releases/tag/v1.0.1) 的应用源码为 [`8e53519888a8`](https://github.com/JshengZ/personal-ai-knowledge-base/commit/8e53519888a8c505b1d1c4a64df46b4fe3cf75c4)。Mac 和 Windows 均通过[源码 CI](https://github.com/JshengZ/personal-ai-knowledge-base/actions/runs/45837018805)及[打包版检查](https://github.com/JshengZ/personal-ai-knowledge-base/actions/runs/45837019823)。[发布记录](https://github.com/JshengZ/personal-ai-knowledge-base/actions/runs/45841474706)在公开前核对源码、版本、大小和安装包摘要；附件 `BUILD-INFO.json` 另外记录发布工具的提交。
+
+Windows 实测完成五份资料、六个真实本地向量、两个项目、PDF/OCR/XLSX、MCP 混合检索和记忆审核，随后三项打包版外观／迁移／导览测试全部通过，无相关控制台错误。基础 CI CPU 对 2,392 字输入的独立向量计算约 158 秒，仅代表该合成用例，不是性能保证。Mac 通过相同的打包版检查。两端包审计均未发现随包个人数据或凭据。安装包未签名，真实公司 API 和实际 ZCode 客户端仍需在目标环境验收。
 
 ## 1.0.1 本地回归结果（2026-11-26）
 
