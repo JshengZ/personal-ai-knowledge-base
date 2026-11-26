@@ -67,12 +67,20 @@ const { output, metadata } = await prepareRelease({
   publisherCommit: process.env.GITHUB_SHA,
 });
 const tag = "v" + metadata.version;
-let existing;
-try {
-  existing = api("releases/tags/" + tag);
-} catch (error) {
-  if (!String(error.stderr).includes("404")) throw error;
-}
+// A draft has no public tag URL yet; the by-tag REST endpoint can return 404.
+// List authenticated releases, then keep using its stable numeric ID.
+const findRelease = () =>
+  JSON.parse(
+    gh(
+      "api",
+      "repos/" + repository + "/releases?per_page=100",
+      "--paginate",
+      "--slurp",
+    ),
+  )
+    .flat()
+    .find((release) => release.tag_name === tag);
+const existing = findRelease();
 if (existing) {
   assert.equal(
     existing.draft,
@@ -120,7 +128,9 @@ gh(
   join(output, "SHA256SUMS.txt"),
   join(output, "BUILD-INFO.json"),
 );
-const draft = api("releases/tags/" + tag);
+const release = findRelease();
+assert.ok(release, "Release draft must exist after uploading");
+const draft = api("releases/" + release.id);
 for (const expected of metadata.assets) {
   const actual = draft.assets.find((asset) => asset.name === expected.name);
   assert.ok(actual, "Missing uploaded installer");
@@ -134,7 +144,7 @@ for (const name of ["SHA256SUMS.txt", "BUILD-INFO.json"])
     "uploaded",
   );
 gh("release", "edit", tag, "--repo", repository, "--draft=false", "--latest");
-const published = api("releases/tags/" + tag);
+const published = api("releases/" + release.id);
 assert.equal(published.draft, false);
 assert.equal(api("git/ref/tags/" + tag).object.sha, commit);
 if (process.env.GITHUB_STEP_SUMMARY)
