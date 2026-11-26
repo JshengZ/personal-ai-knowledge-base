@@ -93,7 +93,10 @@ const args = [
 ];
 let compiler = "MSVC /MT";
 if (process.platform === "win32") {
-  args.push("-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded");
+  args.push(
+    "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded",
+    "-DCMAKE_TRY_COMPILE_CONFIGURATION=Release",
+  );
   const mapping = [
     homedir() + "=/build-home",
     resolve(".") + "=/workspace/personal-ai-knowledge-base",
