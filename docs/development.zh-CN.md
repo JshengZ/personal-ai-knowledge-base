@@ -88,6 +88,8 @@ node scripts/verify-package.mjs win
 5. 创建 Git tag 和草稿 Release，仅上传安装包、`SHA256SUMS.txt`、`BUILD-INFO.json`；核对上传后的摘要再公开。
 6. 检查仓库公开性和无需登录的下载。不要上传开发数据、备份、日志、签名材料或用户配置。
 
-手动发布工作流可构建新平台包，产物先保留为工作流 artifact 供维护者检查，不自动公开 Release。依赖更新需同步第三方许可；JavaScript 清单可用 `collect-licenses.mjs` 更新，Rust 清单随 Cargo 锁文件维护。
+在 GitHub Actions 中先对 `main` 运行 **Build installers**。两端安装包、对应源码 CI 和密钥扫描全部通过后，运行 **Publish verified release**，将构建记录的数字 ID 填入 `installer_run`。流程在云端下载产物，核对源码、版本、大小与 SHA-256，创建草稿，上传并验证四份附件后公开。tag 指向实际受测的安装包源码；`BUILD-INFO.json` 另外记录发布工具的提交。发布前在 `docs/releases/v<版本>.md` 准备中英文说明。构建附件保留七天，过期后需重新构建。
+
+发布流程会拒绝失败构建、被修改的安装包、两端版本不一致及已公开的同名版本；上方手工步骤仍可使用。依赖更新需同步第三方许可；JavaScript 清单可用 `collect-licenses.mjs` 更新，Rust 清单随 Cargo 锁文件维护。
 
 离线打包 Electron 时，可将 `PKB_ELECTRON_DIST` 指向已解压的 Electron，或包含固定版本 `electron-v<version>-<platform>-<arch>.zip` 的本地目录。此选项只使用缓存，不更改固定的 Electron 版本。

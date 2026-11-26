@@ -96,7 +96,9 @@ For organization-specific installers, set `PKB_COMPANY_CONFIG` to a JSON templat
 5. Create a Git tag, then a **draft** GitHub Release. Upload only the installers, `SHA256SUMS.txt`, and `BUILD-INFO.json`. Verify uploaded digests before publishing.
 6. Verify repository visibility and anonymous download access. Never upload `.local/`, knowledge backups, developer logs, signing keys, or user configuration.
 
-The release workflow is manually dispatched, builds fresh platform packages, and stores workflow artifacts for maintainer review. Public release publication remains a deliberate step. GitHub automatically provides source archives for the tag; large installers belong in Releases, not Git history.
+In GitHub Actions, run **Build installers** on `main`. After both package jobs, the matching source CI and secret scan succeed, run **Publish verified release** and enter that build's numeric run ID as `installer_run`. It downloads both artifacts in the cloud, checks their source, version, size and SHA-256, creates a draft, uploads and verifies the four release assets, then publishes. The tag points to the tested installer source; `BUILD-INFO.json` also records the publishing-tool commit. Add bilingual notes under `docs/releases/v<version>.md` before publishing. Build artifacts expire after seven days; rebuild if they have expired.
+
+The publication workflow rejects failed builds, modified binaries, mismatched platform versions and an existing published release. GitHub automatically provides source archives for the tag; large installers belong in Releases. The manual procedure above remains available.
 
 Update third-party notices when dependencies change. `node scripts/collect-licenses.mjs` refreshes JavaScript records, including bundled UI dependencies; Rust license records must be updated alongside lockfile changes. Use only properly licensed contributions and preserve upstream notices.
 

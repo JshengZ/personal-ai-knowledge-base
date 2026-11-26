@@ -42,6 +42,8 @@ jobs:
       - run: npm run build:desktop
       - run: cargo build --locked --manifest-path engine/Cargo.toml
       - run: npm test
+      - name: Release artifact provenance and integrity
+        run: node --test tests/release.test.mjs
       - run: npm run test:integration
       - name: MCP handshake, busy fallback, migration and worker cleanup
         run: npm run test:resilience
