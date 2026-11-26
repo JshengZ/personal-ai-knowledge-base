@@ -18,10 +18,13 @@ pub struct AppState {
     pub home: PathBuf,
     pub wake: Notify,
     pub maintenance: RwLock<()>,
-    pub stopping: AtomicBool,
+    pub stopping: Arc<AtomicBool>,
     pub scanning: AtomicBool,
     pub embedding_busy: AtomicBool,
     pub semantic_error: RwLock<Option<String>>,
+    pub requests: Arc<tokio::sync::Semaphore>,
+    pub shutdown: tokio_util::sync::CancellationToken,
+    pub embedding_metrics: std::sync::Mutex<crate::progress::EmbeddingMetrics>,
 }
 
 impl AppState {
@@ -61,19 +64,33 @@ impl AppState {
             }
             store.set_metadata("settings", &settings)?;
         }
-        let models = Models::new(&home, runtime.clone())?;
+        let mut settings = store.settings()?;
+        if settings.max_file_mb > 32 {
+            settings.max_file_mb = 32;
+            store.set_metadata("settings", &settings)?;
+        }
+        let namespace = store
+            .metadata::<String>("credential_namespace")?
+            .unwrap_or_else(|| crate::storage::credential_namespace(&home));
+        store.set_metadata("credential_namespace", &namespace)?;
+        let temporary = home.join("tmp");
+        std::fs::create_dir_all(&temporary)?;
+        let models = Models::new(namespace, runtime.clone(), temporary.clone())?;
         Ok(Arc::new(Self {
+            stopping: store.cancelled.clone(),
             store,
             models,
-            parser: crate::parser::ParserService::new(runtime.clone()),
+            parser: crate::parser::ParserService::new(runtime.clone(), temporary),
             runtime,
             home,
             wake: Notify::new(),
             maintenance: RwLock::new(()),
-            stopping: AtomicBool::new(false),
             scanning: AtomicBool::new(false),
             embedding_busy: AtomicBool::new(false),
             semantic_error: RwLock::new(None),
+            requests: Arc::new(tokio::sync::Semaphore::new(8)),
+            shutdown: tokio_util::sync::CancellationToken::new(),
+            embedding_metrics: std::sync::Mutex::new(crate::progress::EmbeddingMetrics::default()),
         }))
     }
 
@@ -133,6 +150,9 @@ impl AppState {
             bail!("当前连接无权读取这份资料");
         }
         let root = self.store.root(&document.root_id)?;
+        if !crate::indexer::eligible(std::path::Path::new(&document.path), &root, self)? {
+            bail!("这份资料已被排除，不再允许检索或读取");
+        }
         let path = Path::new(&document.path)
             .canonicalize()
             .context("原文件已移走或暂不可用")?;
@@ -161,6 +181,10 @@ impl AppState {
                 .document(&item.document_id)
                 .is_ok_and(|document| {
                     document.version == item.version
+                        && item
+                            .chunk_id
+                            .as_ref()
+                            .is_none_or(|id| self.store.has_chunk(&document.id, id))
                         && self.check_document(scope, &document, company_only).is_ok()
                 })
         })
@@ -191,7 +215,40 @@ impl AppState {
 
     pub fn stop(&self) {
         self.stopping.store(true, Ordering::SeqCst);
+        self.shutdown.cancel();
+        self.models.request_stop();
+        self.parser.request_stop();
         self.wake.notify_waiters();
+    }
+
+    pub fn indexing_allowed(&self) -> bool {
+        self.reconciliation_allowed()
+            && self.store.settings().is_ok_and(|settings| {
+                crate::storage::require_capacity(&self.home, &settings, 64 * 1024 * 1024).is_ok()
+            })
+    }
+
+    /// Deletions and exclusions must still reconcile when growth is blocked.
+    pub fn reconciliation_allowed(&self) -> bool {
+        self.cleanup_ready() && self.store.settings().is_ok_and(|settings| !settings.paused)
+    }
+
+    /// Pausing discovery does not cancel already authorized removals. A paused
+    /// interrupted migration is kept unchanged so its ready copy can be reused.
+    pub fn cleanup_allowed(&self) -> bool {
+        self.cleanup_ready()
+            && self.store.settings().is_ok_and(|settings| {
+                !settings.paused || !crate::storage::migration_pending(&self.home)
+            })
+    }
+
+    fn cleanup_ready(&self) -> bool {
+        if self.stopping.load(Ordering::SeqCst) {
+            return false;
+        }
+        self.store
+            .counts()
+            .is_ok_and(|counts| counts.get("initialized") == Some(&1))
     }
 
     pub fn audit(&self, scope: &Scope, tool: &str, count: usize) {

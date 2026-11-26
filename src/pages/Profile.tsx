@@ -9,7 +9,7 @@ import {
 import { useKnowledge } from "../context";
 import { request } from "../api";
 import type { Memory } from "../types";
-import { Empty, Modal, date } from "../components/ui";
+import { Select, Empty, Modal, date } from "../components/ui";
 
 const statuses: Record<string, string> = {
   pending: "待确认",
@@ -54,7 +54,7 @@ export function Profile() {
       <header className="page-heading">
         <div>
           <h1>关于我</h1>
-          <p>在资料与经历中，慢慢整理出你确认的记忆。</p>
+          <p>确认、修改或删除个人记忆。</p>
         </div>
         <button className="primary" onClick={() => setEditing("new")}>
           <PlusIcon size={17} />
@@ -191,13 +191,15 @@ export function Profile() {
         <Empty
           title={
             filter === "confirmed"
-              ? "你确认过的记忆会出现在这里"
+              ? "暂无已确认记忆"
               : filter === "stale"
-                ? "当前没有需要复核的记忆"
-                : "当前没有待确认的记忆"
+                ? "暂无待复核记忆"
+                : filter === "all"
+                  ? "暂无记忆"
+                  : "暂无待确认记忆"
           }
         >
-          你可以手动记录偏好，也可以连接公司模型，从项目资料中生成建议。
+          可手动添加，或使用公司模型从项目资料生成记忆建议。
         </Empty>
       )}
       {editing && (
@@ -225,7 +227,7 @@ export function Profile() {
               ))}
             </ol>
           ) : (
-            <p className="muted">这条记忆还没有修改记录。</p>
+            <p className="muted">暂无修改记录。</p>
           )}
         </Modal>
       )}
@@ -321,7 +323,8 @@ function MemoryEditor({
         <>
           <label>
             类型
-            <select
+            <Select
+              aria-label="类型"
               value={category}
               onChange={(event) => setCategory(event.target.value)}
             >
@@ -330,11 +333,12 @@ function MemoryEditor({
                   {label}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
           <label>
             所属项目
-            <select
+            <Select
+              aria-label="所属项目"
               value={project}
               onChange={(event) => setProject(event.target.value)}
             >
@@ -344,7 +348,7 @@ function MemoryEditor({
                   {project.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
         </>
       )}

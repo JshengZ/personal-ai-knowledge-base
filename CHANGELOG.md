@@ -1,5 +1,54 @@
 # Changelog / 更新日志
 
+## 1.0.1 — 2026-11-26
+
+- Simplified the desktop to one navigation rail and consistent forms, tables, dialogs and controls. Added persistent light/dark/system appearance, preset/custom accents, four font sizes, reading fonts, density and sidebar preferences; removed the sample-data entry point and generator.
+- 客户端采用单层侧栏与统一的表单、列表、弹窗和控件；新增可保存的明亮／深色／跟随系统、预设／自定义强调色、四档字号、阅读字体、密度及侧栏偏好；移除示例资料入口及生成能力。
+
+### Built-in guide / 内置使用导览
+
+- Optional first-run guide over eight real interface steps, with automatic navigation, Previous/Next, Skip, close and Escape. Replay from the sidebar or Settings; restore the previous view, scroll and drafts. Completion/dismissal persists independently of provider and credential drafts, with visible save retry.
+- 首次启动提供可跳过的 8 步真实界面导览，支持自动导航、上一步／下一步、跳过、关闭和 Escape；侧栏与设置可重放，退出还原原位置与草稿；完成／跳过记录独立保存并提供失败重试。
+- Fresh libraries remain empty; the guide does not create sample data, invoke models, or configure clients. 新安装保持空知识库，导览不生成示例、不调用模型或自动配置客户端。
+
+### Reliability fixes / 可靠性修复
+
+- Theme expanded dropdowns, selection and keyboard focus with the app palette; normalize action heights, spacing and dialog footers; truncate long selected values while preserving full menu labels; replace decorative copy with direct instructions.
+- Match settings saves to their section, preserving unrelated draft providers and credentials.
+- Restrict short request timeouts to reads; await definite outcomes for model summaries and atomic restores. Validate backups and import data into a canonical schema before changing the current library.
+- Account for reusable database pages; process removals in bounded durable jobs even when growth is blocked. Preserve warmed local-model children across cancelled queries and separate vectors for changed API routes.
+- Journal interrupted migrations, reuse verified copies on explicit retry, preserve unknown/changed copies, and keep a normal quit from interrupting migration.
+- Build metadata distinguishes unpublished working-tree packages from artifacts built from an exact source commit.
+
+- 展开选单、选中及键盘焦点使用统一主题；规范按钮高度、间距与弹窗操作区；长名称省略显示并在菜单内保留全文；移除装饰性文案。
+- 设置按分组保存，保留其他分组的模型与凭据草稿。
+- 短超时仅用于读取；摘要与恢复等待确定结果。备份须先校验并导入标准结构，再替换当前库。
+- 容量统计区分可复用页；禁止新增索引时仍以持久化小批任务清理已移除资料。本地模型在查询取消后继续预热，更换 API 路径隔离旧向量。
+- 迁移增加作业记录，明确重试可复用完整副本；保留未知或已变化副本，正常退出等待迁移结束。
+- 构建记录区分未发布工作区安装包和来自确定源码提交的安装包。
+
+### English
+
+- Windows assisted installer with program-folder selection; independent data-location setup and verified migration with preserved agent tokens/keychain namespace and safe old-file cleanup.
+- Free-space reserve, index-size limits, actionable disk-full messages, parser bounds and cleanup of temporary backup files.
+- MCP initialize/tools-list no longer wait for backend health. HTTP handshakes bypass database writes; bounded request work and full-text fallback keep protocol responses responsive.
+- Move tokenization outside the write lock, seek embedding batches with a cursor, use bounded read queries and incremental progress counters instead of repeated full-table counts.
+- Separate file/chunk/vector progress, measured throughput/ETA, CPU profiles and an automatic local-work budget. Department Embedding APIs/API keys and the bundled Qwen CPU model remain supported; API batch size is configurable.
+- Bounded character overlap and grouped short DOCX paragraphs with citations; project/build-manifest detection, project-scoped MCP guidance and explicit unsupported/empty-format reporting.
+- Rotating service logs, cancellable parsing/model startup, Windows Job Objects for worker cleanup, orderly tray shutdown, and an English Windows executable name.
+
+### 简体中文
+
+- Windows 安装向导可选择程序目录；首次启动选择独立数据位置，可校验迁移并保留连接令牌和系统凭据，成功启动后清理旧文件。
+- 增加剩余空间保护、索引容量限制、磁盘满提示、解析规模限制及备份临时文件清理。
+- MCP 握手和工具发现不再等待后端健康检查；HTTP 握手绕开数据库写入，繁忙查询限时返回并保留全文降级。
+- 分词移出写锁，向量任务使用游标批处理，查询限时，进度使用增量计数，减少大库重复扫描。
+- 文件、分块、向量分阶段进度和实测速率/耗时估计；提供 CPU 档位与自动模式本地预算，完整保留部门 Embedding API/API Key 和随包 Qwen CPU 模型，并可设置 API 批量大小。
+- 修复长行重叠放大，合并短 Word 段落并保留引用；扩展工程识别、项目限定调用说明，显示不支持格式和空提取。
+- 增加滚动日志、解析/模型取消、Windows Job Object 子进程管理、托盘退出清理及英文 Windows 程序名。
+
+Installers remain unsigned. Hosted synthetic tests do not substitute for acceptance with a real organization API/client or a large private corpus. / 安装包仍未签名；云端合成测试不替代真实公司接口、客户端和大规模私有资料验收。
+
 ## 1.0.0 — 2026-11-25
 
 ### English

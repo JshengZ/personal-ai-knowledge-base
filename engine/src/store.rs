@@ -4,11 +4,22 @@ use jieba_rs::Jieba;
 use rusqlite::{params, Connection as Sqlite, OptionalExtension};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
-use std::{collections::HashSet, path::Path, sync::Mutex, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, RwLock,
+    },
+    time::{Duration, Instant},
+};
 
 pub struct Store {
     pub connection: Mutex<Sqlite>,
     tokenizer: Jieba,
+    path: PathBuf,
+    clients: RwLock<HashMap<String, (String, Connection)>>,
+    pub cancelled: Arc<AtomicBool>,
 }
 
 impl Store {
@@ -33,6 +44,9 @@ impl Store {
         connection.busy_timeout(Duration::from_secs(10))?;
         connection.execute_batch(
             "PRAGMA journal_mode=WAL;
+             PRAGMA wal_autocheckpoint=256;
+             PRAGMA journal_size_limit=16777216;
+             PRAGMA temp_store=FILE;
              PRAGMA foreign_keys=ON;
              PRAGMA synchronous=NORMAL;
              CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -50,11 +64,15 @@ impl Store {
              );
              CREATE INDEX IF NOT EXISTS chunks_document ON chunks(document_id, ordinal);
              CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(chunk_id UNINDEXED, tokens, tokenize='unicode61');
-             CREATE TRIGGER IF NOT EXISTS chunks_insert AFTER INSERT ON chunks BEGIN
-                 INSERT INTO chunk_fts(chunk_id,tokens) VALUES(new.id,new.lexical);
+             DROP TRIGGER IF EXISTS chunks_insert;
+             DROP TRIGGER IF EXISTS chunks_delete;
+             DROP TRIGGER IF EXISTS chunks_insert;
+             DROP TRIGGER IF EXISTS chunks_delete;
+             CREATE TRIGGER chunks_insert AFTER INSERT ON chunks BEGIN
+                 INSERT INTO chunk_fts(rowid,chunk_id,tokens) VALUES(new.rowid,new.id,new.lexical);
              END;
-             CREATE TRIGGER IF NOT EXISTS chunks_delete AFTER DELETE ON chunks BEGIN
-                 DELETE FROM chunk_fts WHERE chunk_id=old.id;
+             CREATE TRIGGER chunks_delete AFTER DELETE ON chunks BEGIN
+                 DELETE FROM chunk_fts WHERE rowid=old.rowid AND chunk_id=old.id;
              END;
              CREATE TABLE IF NOT EXISTS embeddings(
                  chunk_id TEXT PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
@@ -72,10 +90,78 @@ impl Store {
              );
              PRAGMA user_version=1;",
         )?;
-        Ok(Self {
+        crate::counters::ensure(&connection, schema == 0)?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let stopping = cancelled.clone();
+        connection.progress_handler(2000, Some(move || stopping.load(Ordering::SeqCst)));
+        let store = Self {
             connection: Mutex::new(connection),
             tokenizer: Jieba::new(),
-        })
+            path: path.to_path_buf(),
+            clients: RwLock::new(HashMap::new()),
+            cancelled,
+        };
+        store.reload_clients()?;
+        Ok(store)
+    }
+
+    pub fn reload_clients(&self) -> Result<()> {
+        let db = self.connection.lock().unwrap();
+        let mut statement = db.prepare("SELECT id,token_hash,data FROM connections")?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut clients = HashMap::new();
+        for (id, hash, data) in rows {
+            clients.insert(id, (hash, serde_json::from_str(&data)?));
+        }
+        *self.clients.write().unwrap() = clients;
+        Ok(())
+    }
+
+    pub fn ensure_fts_triggers(&self) -> Result<()> {
+        self.connection.lock().unwrap().execute_batch("DROP TRIGGER IF EXISTS chunks_insert; DROP TRIGGER IF EXISTS chunks_delete;
+            CREATE TRIGGER chunks_insert AFTER INSERT ON chunks BEGIN INSERT INTO chunk_fts(rowid,chunk_id,tokens) VALUES(new.rowid,new.id,new.lexical); END;
+            CREATE TRIGGER chunks_delete AFTER DELETE ON chunks BEGIN DELETE FROM chunk_fts WHERE rowid=old.rowid AND chunk_id=old.id; END;")?;
+        Ok(())
+    }
+
+    fn reader(&self) -> Result<Sqlite> {
+        self.reader_budget(2)
+    }
+
+    pub fn reader_budget(&self, seconds: u64) -> Result<Sqlite> {
+        let db = Sqlite::open_with_flags(&self.path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        db.busy_timeout(Duration::from_millis(100))?;
+        db.execute_batch("PRAGMA query_only=ON; PRAGMA cache_size=-8192;")?;
+        let start = Instant::now();
+        let stopping = self.cancelled.clone();
+        db.progress_handler(
+            2000,
+            Some(move || {
+                stopping.load(Ordering::SeqCst) || start.elapsed() > Duration::from_secs(seconds)
+            }),
+        );
+        Ok(db)
+    }
+
+    pub fn recent_documents(&self, limit: usize) -> Result<Vec<Document>> {
+        let db = self.reader()?;
+        let mut statement =
+            db.prepare("SELECT data FROM documents ORDER BY rowid DESC LIMIT ?1")?;
+        let values = statement
+            .query_map([limit], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        values
+            .into_iter()
+            .map(|value| serde_json::from_str(&value).map_err(Into::into))
+            .collect()
     }
 
     pub fn settings(&self) -> Result<Settings> {
@@ -140,7 +226,12 @@ impl Store {
         self.get_json("memories", id)
     }
     pub fn client(&self, id: &str) -> Result<Connection> {
-        self.get_json("connections", id)
+        self.clients
+            .read()
+            .unwrap()
+            .get(id)
+            .map(|(_, client)| client.clone())
+            .context("Agent 连接不存在")
     }
 
     fn get_json<T: DeserializeOwned>(&self, table: &str, id: &str) -> Result<T> {
@@ -239,6 +330,22 @@ impl Store {
     }
 
     pub fn replace_document(&self, document: &Document, chunks: &[Chunk]) -> Result<()> {
+        let project = self.project(&document.project_id)?;
+        let relative = std::path::Path::new(&document.path)
+            .strip_prefix(&project.root_path)
+            .unwrap_or(std::path::Path::new(&document.path))
+            .to_string_lossy();
+        // Tokenization is CPU work and must never hold the database write lock.
+        let mut lexical = Vec::with_capacity(chunks.len());
+        for chunk in chunks {
+            if self.cancelled.load(Ordering::SeqCst) {
+                bail!("索引已停止");
+            }
+            lexical.push(self.lexical(&format!(
+                "{} {} {} {}",
+                project.name, relative, document.title, chunk.text
+            )));
+        }
         let mut db = self.connection.lock().unwrap();
         let transaction = db.transaction()?;
         transaction.execute(
@@ -247,11 +354,36 @@ impl Store {
             params![document.id,document.path,document.root_id,document.project_id,document.version,document.status,serde_json::to_string(document)?],
         )?;
         transaction.execute("DELETE FROM chunks WHERE document_id=?1", [&document.id])?;
-        for chunk in chunks {
-            let terms = self.lexical(&format!("{} {}", document.title, chunk.text));
-            transaction.execute("INSERT INTO chunks(id,document_id,ordinal,text,location,lexical) VALUES(?1,?2,?3,?4,?5,?6)",
-                params![chunk.id,chunk.document_id,chunk.ordinal,chunk.text,serde_json::to_string(&chunk.location)?,terms])?;
+        let maximum: i64 =
+            transaction.query_row("SELECT COALESCE(MAX(rowid),0) FROM chunks", [], |row| {
+                row.get(0)
+            })?;
+        let previous: Option<String> = transaction
+            .query_row(
+                "SELECT value FROM metadata WHERE key='chunk_high_water'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let mut rowid = previous
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(0)
+            .max(maximum);
+        for (chunk, terms) in chunks.iter().zip(lexical) {
+            if self.cancelled.load(Ordering::SeqCst) {
+                bail!("索引已停止");
+            }
+            rowid += 1;
+            transaction.execute("INSERT INTO chunks(rowid,id,document_id,ordinal,text,location,lexical) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![rowid,chunk.id,chunk.document_id,chunk.ordinal,chunk.text,serde_json::to_string(&chunk.location)?,terms])?;
         }
+        transaction.execute("INSERT INTO metadata(key,value) VALUES('chunk_high_water',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [rowid.to_string()])?;
+        // A re-index (possibly under a newly added root) supersedes an older
+        // deferred removal for the same path/document id, even at the same hash.
+        transaction.execute(
+            "DELETE FROM cleanup_jobs WHERE document_id=?1",
+            [&document.id],
+        )?;
         transaction.commit()?;
         drop(db);
         self.invalidate_evidence(&document.id, Some(&document.version))?;
@@ -287,14 +419,140 @@ impl Store {
             .collect()
     }
 
+    pub fn has_chunk(&self, document_id: &str, chunk_id: &str) -> bool {
+        self.reader()
+            .and_then(|db| {
+                Ok(db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM chunks WHERE id=?1 AND document_id=?2)",
+                    params![chunk_id, document_id],
+                    |row| row.get::<_, bool>(0),
+                )?)
+            })
+            .unwrap_or(false)
+    }
+
     pub fn remove_document(&self, id: &str) -> Result<()> {
+        self.schedule_cleanup_many(&[id.to_string()])?;
+        while !self.remove_document_step(id)? {
+            if self.cancelled.load(Ordering::SeqCst) {
+                bail!("索引清理已停止");
+            }
+        }
+        Ok(())
+    }
+
+    /// A durable tombstone hides the document before asynchronous reclamation.
+    /// Keep the original version/root so a stale job cannot delete a re-index.
+    pub fn schedule_cleanup_many(&self, ids: &[String]) -> Result<()> {
+        let home = self.path.parent().context("知识库路径无效")?;
+        for batch in ids.chunks(32) {
+            self.try_checkpoint()?;
+            crate::storage::require_cleanup_capacity(home, 4 * 1024 * 1024)?;
+            let mut db = self.connection.lock().unwrap();
+            let transaction = db.transaction()?;
+            for id in batch {
+                transaction.execute("INSERT INTO cleanup_jobs(document_id,version,root_id)
+                    SELECT id,version,root_id FROM documents WHERE id=?1
+                    ON CONFLICT(document_id) DO UPDATE SET version=excluded.version,root_id=excluded.root_id
+                    WHERE cleanup_jobs.version!=excluded.version OR cleanup_jobs.root_id!=excluded.root_id", [id])?;
+                transaction.execute("UPDATE documents SET status='removing',data=json_set(data,'$.status','removing','$.error','正在清理已移出资料范围的索引；原始文件不会删除') WHERE id=?1 AND status!='removing'", [id])?;
+            }
+            transaction.commit()?;
+        }
+        Ok(())
+    }
+
+    pub fn next_cleanup(&self) -> Result<Option<String>> {
+        Ok(self
+            .reader()?
+            .query_row(
+                "SELECT document_id FROM cleanup_jobs ORDER BY rowid LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn cancel_cleanup(&self, id: &str) -> Result<()> {
         let mut db = self.connection.lock().unwrap();
         let transaction = db.transaction()?;
-        transaction.execute("DELETE FROM documents WHERE id=?1", [id])?;
+        transaction.execute("DELETE FROM cleanup_jobs WHERE document_id=?1", [id])?;
+        // A partial removal must be parsed again before it becomes searchable.
+        transaction.execute("UPDATE documents SET status='indexing',data=json_set(data,'$.status','indexing','$.error','资料范围已更新，等待重新建立完整索引') WHERE id=?1 AND status='removing'", [id])?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Do not wait for a long reader while holding the shared writer mutex.
+    pub fn try_checkpoint(&self) -> Result<bool> {
+        let db = self.connection.lock().unwrap();
+        db.busy_timeout(Duration::ZERO)?;
+        let checkpoint = db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            row.get::<_, i64>(0)
+        });
+        db.busy_timeout(Duration::from_secs(10))?;
+        Ok(checkpoint? == 0)
+    }
+
+    /// At most 64 chunks / 4 MiB payload per rollback-safe transaction. Large
+    /// legacy documents no longer cascade millions of deletes into a single WAL.
+    pub fn remove_document_step(&self, id: &str) -> Result<bool> {
+        self.try_checkpoint()?;
+        let home = self.path.parent().context("知识库路径无效")?;
+        let mut db = self.connection.lock().unwrap();
+        let transaction = db.transaction()?;
+        let matching = transaction.query_row("SELECT EXISTS(SELECT 1 FROM cleanup_jobs q JOIN documents d ON d.id=q.document_id
+            WHERE q.document_id=?1 AND d.version=q.version AND d.root_id=q.root_id AND d.status='removing')", [id], |row| row.get::<_, bool>(0))?;
+        if !matching {
+            transaction.execute("DELETE FROM cleanup_jobs WHERE document_id=?1", [id])?;
+            transaction.commit()?;
+            return Ok(true);
+        }
+        let (rowids, payload) = {
+            let mut statement = transaction.prepare("SELECT c.rowid,length(CAST(c.text AS BLOB))+length(CAST(c.lexical AS BLOB))+length(CAST(c.location AS BLOB))+COALESCE(length(e.vector),0)
+                FROM chunks c LEFT JOIN embeddings e ON e.chunk_id=c.id WHERE c.document_id=?1 ORDER BY c.ordinal LIMIT 64")?;
+            let mut ids = vec![];
+            let mut payload = 0u64;
+            for row in statement.query_map([id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, u64>(1)?))
+            })? {
+                let (rowid, bytes) = row?;
+                if !ids.is_empty() && payload.saturating_add(bytes) > 4 * 1024 * 1024 {
+                    break;
+                }
+                ids.push(rowid);
+                payload = payload.saturating_add(bytes);
+            }
+            (ids, payload)
+        };
+        let finished = rowids.is_empty();
+        let budget = if finished {
+            1024 * 1024
+        } else {
+            payload.saturating_mul(4).saturating_add(16 * 1024 * 1024)
+        };
+        crate::storage::require_cleanup_capacity(home, budget)?;
+        if finished {
+            transaction.execute("DELETE FROM documents WHERE id=?1", [id])?;
+        } else {
+            transaction.execute("DELETE FROM chunks WHERE document_id=?1 AND rowid IN (SELECT value FROM json_each(?2))", params![id, serde_json::to_string(&rowids)?])?;
+        }
         transaction.commit()?;
         drop(db);
-        self.invalidate_evidence(id, None)?;
-        Ok(())
+        self.try_checkpoint()?;
+        if finished {
+            self.invalidate_evidence(id, None)?;
+        }
+        Ok(finished)
+    }
+
+    pub fn queued_paths(&self, root_id: &str) -> Result<Vec<String>> {
+        let db = self.reader()?;
+        let mut statement = db.prepare("SELECT path FROM jobs WHERE root_id=?1")?;
+        let paths = statement
+            .query_map([root_id], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(paths)
     }
 
     pub fn invalidate_evidence(
@@ -304,7 +562,11 @@ impl Store {
     ) -> Result<()> {
         for mut memory in self.memories()? {
             let stale = memory.evidence.iter().any(|e| {
-                e.document_id == document_id && Some(e.version.as_str()) != current_version
+                e.document_id == document_id
+                    && (Some(e.version.as_str()) != current_version
+                        || e.chunk_id
+                            .as_ref()
+                            .is_some_and(|id| !self.has_chunk(document_id, id)))
             });
             if stale && memory.status != "dismissed" {
                 memory.history.push(json!({"at":timestamp(),"content":memory.content,"status":memory.status,"reason":"source_changed"}));
@@ -315,7 +577,11 @@ impl Store {
         }
         for mut project in self.projects()? {
             if project.summary_evidence.iter().any(|e| {
-                e.document_id == document_id && Some(e.version.as_str()) != current_version
+                e.document_id == document_id
+                    && (Some(e.version.as_str()) != current_version
+                        || e.chunk_id
+                            .as_ref()
+                            .is_some_and(|id| !self.has_chunk(document_id, id)))
             }) {
                 project.summary_stale = true;
                 self.save_project(&project)?;
@@ -354,6 +620,15 @@ impl Store {
                 params![client.id, serde_json::to_string(client)?],
             )?;
         }
+        let hash: String = db.query_row(
+            "SELECT token_hash FROM connections WHERE id=?1",
+            [&client.id],
+            |row| row.get(0),
+        )?;
+        self.clients
+            .write()
+            .unwrap()
+            .insert(client.id.clone(), (hash, client.clone()));
         Ok(())
     }
 
@@ -366,15 +641,8 @@ impl Store {
     }
 
     pub fn authenticate(&self, id: &str, token: &str) -> Result<Connection> {
-        let db = self.connection.lock().unwrap();
-        let row: Option<(String, String)> = db
-            .query_row(
-                "SELECT token_hash,data FROM connections WHERE id=?1",
-                [id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        let (expected, data) = row.context("Agent 连接不存在")?;
+        let clients = self.clients.read().unwrap();
+        let (expected, client) = clients.get(id).context("Agent 连接不存在")?;
         let digest = blake3::hash(token.as_bytes()).to_hex().to_string();
         let difference = expected
             .as_bytes()
@@ -384,11 +652,10 @@ impl Store {
         if expected.len() != digest.len() || difference != 0 {
             bail!("Agent 凭据无效");
         }
-        let client: Connection = serde_json::from_str(&data)?;
         if !client.enabled {
             bail!("此 Agent 连接已停用");
         }
-        Ok(client)
+        Ok(client.clone())
     }
 
     pub fn save_embedding(&self, chunk_id: &str, model: &str, vector: &[f32]) -> Result<()> {
@@ -416,28 +683,45 @@ impl Store {
         model: &str,
         limit: usize,
         remote: bool,
-    ) -> Result<Vec<Chunk>> {
-        let db = self.connection.lock().unwrap();
+        after: i64,
+    ) -> Result<(i64, Vec<Chunk>, bool)> {
+        // Seek through bounded rowid windows instead of rescanning every
+        // already-embedded chunk for each eight-item batch (quadratic growth).
+        let db = self.reader()?;
+        let end: Option<i64> = db.query_row(
+            "SELECT MAX(rowid) FROM (SELECT rowid FROM chunks WHERE rowid>?1 ORDER BY rowid LIMIT 256)",
+            [after], |row|row.get(0))?;
+        let Some(end) = end else {
+            return Ok((after, vec![], true));
+        };
         let mut statement = db.prepare(
-            "SELECT c.id,c.document_id,c.ordinal,c.text,c.location FROM chunks c
+            "SELECT c.rowid,c.id,c.document_id,c.ordinal,c.text,c.location FROM chunks c
              JOIN documents d ON d.id=c.document_id JOIN roots r ON r.id=d.root_id
              LEFT JOIN embeddings e ON e.chunk_id=c.id AND e.model=?1
-             WHERE e.chunk_id IS NULL AND d.status='ready' AND json_extract(r.data,'$.enabled')=1
-             AND (?3=0 OR json_extract(r.data,'$.policy')!='local') LIMIT ?2",
+             WHERE c.rowid>?4 AND c.rowid<=?5 AND e.chunk_id IS NULL AND d.status='ready'
+             AND json_extract(r.data,'$.enabled')=1
+             AND (?3=0 OR json_extract(r.data,'$.policy')!='local') ORDER BY c.rowid LIMIT ?2",
         )?;
         let rows = statement
-            .query_map(params![model, limit, remote], |row| {
+            .query_map(params![model, limit, remote, after, end], |row| {
                 Ok((
-                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, usize>(2)?,
-                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, usize>(3)?,
                     row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows.into_iter()
-            .map(|(id, document_id, ordinal, text, location)| {
+        let cursor = if rows.len() == limit {
+            rows.last().unwrap().0
+        } else {
+            end
+        };
+        let chunks = rows
+            .into_iter()
+            .map(|(_, id, document_id, ordinal, text, location)| {
                 Ok(Chunk {
                     id,
                     document_id,
@@ -446,7 +730,8 @@ impl Store {
                     location: serde_json::from_str(&location)?,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>>>()?;
+        Ok((cursor, chunks, false))
     }
 
     pub fn lexical_candidates(
@@ -470,10 +755,10 @@ impl Store {
         if terms.is_empty() {
             return Ok(vec![]);
         }
-        let db = self.connection.lock().unwrap();
+        let db = self.reader()?;
         let mut statement = db.prepare("SELECT f.chunk_id FROM chunk_fts f JOIN chunks c ON c.id=f.chunk_id JOIN documents d ON d.id=c.document_id
             WHERE chunk_fts MATCH ?1 AND d.status='ready' AND d.root_id IN (SELECT value FROM json_each(?3))
-            AND d.project_id IN (SELECT value FROM json_each(?4)) ORDER BY bm25(chunk_fts) LIMIT ?2")?;
+            AND d.project_id IN (SELECT value FROM json_each(?4)) ORDER BY f.rank LIMIT ?2")?;
         let ids = statement
             .query_map(
                 params![
@@ -500,7 +785,7 @@ impl Store {
             .iter()
             .flat_map(|value| value.to_le_bytes())
             .collect();
-        let db = self.connection.lock().unwrap();
+        let db = self.reader()?;
         let mut statement = db.prepare("SELECT e.chunk_id FROM embeddings e JOIN chunks c ON c.id=e.chunk_id JOIN documents d ON d.id=c.document_id
             WHERE e.model=?1 AND e.dimensions=?2 AND d.status='ready' AND d.root_id IN (SELECT value FROM json_each(?5))
             AND d.project_id IN (SELECT value FROM json_each(?6)) ORDER BY vec_distance_cosine(e.vector,?3) LIMIT ?4")?;
@@ -577,6 +862,7 @@ impl Store {
     }
 
     pub fn event(&self, kind: &str, message: &str, details: Value) -> Result<()> {
+        tracing::info!(kind, message, "knowledge event");
         let db = self.connection.lock().unwrap();
         db.execute(
             "INSERT INTO events(created_at,kind,message,details) VALUES(?1,?2,?3,?4)",
@@ -618,17 +904,25 @@ impl Store {
             .collect()
     }
 
+    pub fn counts(&self) -> Result<HashMap<String, i64>> {
+        let db = self.reader()?;
+        let mut statement = db.prepare("SELECT name,value FROM row_counts")?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+        Ok(rows)
+    }
+
     pub fn stats(&self) -> Result<Value> {
-        let db = self.connection.lock().unwrap();
-        let count = |table: &str| -> Result<i64> {
-            Ok(
-                db.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
-                    row.get(0)
-                })?,
-            )
-        };
+        let counts = self.counts()?;
+        let count = |name: &str| counts.get(name).copied().unwrap_or(0).max(0);
         Ok(
-            json!({"documents":count("documents")?,"chunks":count("chunks")?,"vectors":count("embeddings")?,"pending":count("jobs")?,"projects":count("projects")?}),
+            json!({"documents":count("documents"),"chunks":count("chunks"),"vectors":count("embeddings"),"pending":count("jobs"),"projects":count("projects"),
+            "ready":count("status:ready"),"errors":count("status:error"),"empty":count("status:empty"),"indexing":count("status:indexing"),"cleaning":count("status:removing"),"initialized":count("initialized")==1}),
         )
+    }
+
+    pub fn pending_jobs(&self) -> Result<usize> {
+        Ok(self.counts()?.get("jobs").copied().unwrap_or(0).max(0) as usize)
     }
 }

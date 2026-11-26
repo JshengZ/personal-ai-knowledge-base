@@ -3,6 +3,8 @@ import type { Snapshot } from "./types";
 
 export type View =
   "projects" | "search" | "sources" | "profile" | "agents" | "settings";
+export type SettingsTab =
+  "appearance" | "models" | "indexing" | "storage" | "activity";
 export interface KnowledgeContext {
   data: Snapshot;
   refresh: () => Promise<void>;
@@ -13,6 +15,9 @@ export interface KnowledgeContext {
   selectProject: (id: string) => void;
   openSource: (id: string, chunkId?: string) => void;
   addRoot: () => void;
+  startGuide: () => void;
+  settingsTab: SettingsTab;
+  setSettingsTab: (tab: SettingsTab) => void;
 }
 export const Context = createContext<KnowledgeContext | null>(null);
 export function useKnowledge() {

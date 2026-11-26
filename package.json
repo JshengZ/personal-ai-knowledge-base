@@ -1,6 +1,6 @@
 {
   "name": "personal-knowledge",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "本地个人知识库与 MCP 知识服务",
   "author": "Personal Knowledge Contributors",
@@ -21,7 +21,10 @@
     "dist:win": "node scripts/package.mjs win",
     "check": "tsc --noEmit && cargo check --manifest-path engine/Cargo.toml",
     "test": "cargo test --manifest-path engine/Cargo.toml && node --test tests/parser.test.mjs",
-    "test:integration": "node --test tests/integration.test.mjs"
+    "test:integration": "node --test tests/integration.test.mjs",
+    "test:resilience": "node --test tests/mcp-resilience.test.mjs",
+    "test:desktop": "node --test tests/desktop-storage.test.mjs",
+    "test:onboarding": "node --test tests/onboarding.test.mjs"
   },
   "dependencies": {
     "@napi-rs/canvas": "1.2.0",
@@ -85,13 +88,15 @@
       "hardenedRuntime": true
     },
     "win": {
+      "executableName": "Personal-Knowledge",
       "target": [
         "nsis"
       ],
       "signExecutable": false
     },
     "nsis": {
-      "oneClick": true,
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
       "perMachine": false,
       "deleteAppDataOnUninstall": false,
       "createDesktopShortcut": true

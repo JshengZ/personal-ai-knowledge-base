@@ -56,7 +56,7 @@ test('files, hybrid retrieval, MCP, permissions, memory and backup form a comple
     let snapshot=await until(async()=>{const state=await api('GET','/state');return state.documents.length===2&&state.documents.every((document)=>document.status==='ready')?state:false;},'initial file indexing');
     const original=snapshot.documents.find((document)=>document.title==='排序实验.md');
     const project=snapshot.projects.find((project)=>project.id===original.project_id);
-    await until(async()=>{const state=await api('GET','/state');return state.stats.vectors>=1;},'embedding queue');
+    await until(async()=>{const state=await api('GET','/state');return state.stats.vectors>=1&&!state.embedding_busy;},'embedding queue');
     assert.ok(!calls.filter((call)=>call.url.endsWith('/embeddings')).some((call)=>JSON.stringify(call.body).includes('PRIVATE_LOCAL_ONLY_DOCUMENT')));
     const answer=await api('POST','/ask',{query:'排序实验用了什么算法',project_id:project.id,limit:8});
     assert.match(answer.answer,/LightGBM/);assert.ok(answer.hits.length);assert.ok(answer.mode.includes('hybrid'));
@@ -94,10 +94,9 @@ test('files, hybrid retrieval, MCP, permissions, memory and backup form a comple
     const backup=new Uint8Array(await response.arrayBuffer());assert.ok(backup.length>100);
     await api('POST','/backups/restore',backup);
     snapshot=await api('GET','/state');assert.equal(snapshot.connections.length,0);assert.ok(snapshot.roots.every((root)=>!root.enabled));assert.equal(snapshot.settings.paused,true);
-    await api('POST','/demo',{});
-    snapshot=await api('GET','/state');
-    assert.equal(snapshot.projects.filter((project)=>project.name==='推荐排序 · 示例').length,1,'sample paths must not create duplicate projects through filesystem aliases');
-    context.diagnostic('Verified real filesystem changes, company-compatible API flow, stdio + HTTP MCP, scope changes, citations, backup restoration and canonical sample paths.');
+    const removedDemo=await fetch(url+'/api/demo',{method:'POST',headers:{Authorization:'Bearer '+info.token,'Content-Type':'application/json'},body:'{}'});
+    assert.ok([404,405].includes(removedDemo.status),'sample generation is no longer exposed');
+    context.diagnostic('Verified real filesystem changes, company-compatible API flow, stdio + HTTP MCP, scope changes, citations, backup restoration and removed sample generation.');
   }catch(error){error.message+='\nBackend diagnostics: '+stderr;throw error;}
   finally {
     for(const client of clients){try{await client.close();}catch{}}

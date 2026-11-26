@@ -4,19 +4,39 @@
 
 [公开下载与版本说明](https://github.com/JshengZ/personal-ai-knowledge-base/releases) · [完整使用指南](docs/user-guide.zh-CN.md)
 
-![明亮主题工作区，使用虚构示例资料](docs/images/desktop.png)
+![空知识库资料页](docs/images/desktop.png)
+
+支持明亮／深色／跟随系统、主题色、字号与界面密度。[个性化设置](docs/images/appearance.png)即时生效并自动保存。
 
 安装在自己电脑上的知识服务。添加工作资料目录后，应用持续建立索引，通过 MCP 为 ZCode 等 Agent 提供项目背景、原文依据和已确认的个人记忆。资料、数据库和连接凭据保存在本机，不需要 Docker、Python 或终端操作。
 
+## 存储与大目录处理
+
+Windows 安装器支持选择程序目录；首次启动选择独立的数据目录。设置中可迁移已有知识库，复制并校验后才清理旧索引；原始资料保持原位。默认保留 5 GB 可用空间、索引上限 10 GB，可在数据盘容量充足时调整。
+
+资料页分别显示文件处理、文本分块和当前模型向量进度。部门 Embedding API / API Key、随包 Qwen CPU 模型和仅全文三种用法均保留。自动模式的本地预算默认 50,000 个片段，大规模或实测过慢时先保留全文检索；部门 API 不受此本地预算限制，明确选择本地模式也可继续。建议按项目选择资料，排除数据集、缓存和构建产物。
+
 ## 安装与使用
 
-1. 从 [Releases](https://github.com/JshengZ/personal-ai-knowledge-base/releases/latest) 下载 [Mac Intel DMG](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.0/Personal-Knowledge-1.0.0-mac-x64.dmg) 或 [Windows x64 安装包](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.0/Personal-Knowledge-1.0.0-win-x64.exe)。Mac 将应用拖入“应用程序”，Windows 双击按当前用户安装。
-2. 打开应用，点击“选择目录”，选择工作项目、笔记或文档文件夹。可以先点击“用示例资料体验”；示例会单独生成，不会扫描其他目录。
-3. 需要在知识库窗口问答、整理摘要时，在向导或“设置”中填写公司 API 地址、模型名和个人 API Key。只用 MCP 提供资料时，可以稍后配置对话模型，由 ZCode 自己的模型组织回答。
+1. 从 [Releases](https://github.com/JshengZ/personal-ai-knowledge-base/releases/latest) 下载 [Mac Intel DMG](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.1/Personal-Knowledge-1.0.1-mac-x64.dmg) 或 [Windows x64 安装包](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.1/Personal-Knowledge-1.0.1-win-x64.exe)。Mac 将应用拖入“应用程序”，Windows 使用安装向导选择程序目录，按当前用户安装。首次启动另行选择知识库存储位置，索引、缓存和备份可以放在其他磁盘。
+2. 首次启动可查看或跳过内置导览。然后在“资料”页点击“添加资料目录”，选择项目、笔记或文档文件夹。新安装为空知识库，导览可随时从“使用指南”重放。
+3. 需要在知识库窗口问答、整理摘要时，在“设置”中填写公司 API 地址、模型名和个人 API Key。只用 MCP 提供资料时，可以稍后配置对话模型，由 ZCode 自己的模型组织回答。
 4. 在“Agent 连接”中添加 ZCode，选择共享项目，点击“一键配置 ZCode”。应用会保留已有配置并自动生成备份。然后在 ZCode 新建会话，询问一个真实项目问题并检查工具调用与原文引用。
 5. 以后将新文件放进已添加的目录即可。文件修改、重命名、删除也会自动核对。关闭窗口后，应用继续在托盘中运行；从托盘或菜单退出会停止当前服务。Agent 的 stdio 连接可以按需再次启动知识服务。
 
 当前提供 Mac Intel x64 与 Windows x64 目标。Mac 安装包未使用企业证书签名或 Apple 公证；如系统拦截，可通过系统设置的“隐私与安全性”完成打开授权。正式分发可由维护人员使用公司的签名证书构建。Windows 的实际运行与公司环境联调状态请查看 [验收记录](docs/verification.zh-CN.md)，编译成功不代表已经完成公司电脑验收。
+
+## 界面与使用导览
+
+新安装为空知识库。内置 8 步真实界面导览，支持下一步、上一步、跳过与 Escape；可从侧栏或设置重放，退出后恢复原页面和未保存的表单草稿。
+
+![可跳过的首次使用指引](docs/images/onboarding.png)
+
+![个性化设置](docs/images/appearance.png)
+
+[MCP 页面导览](docs/images/onboarding-mcp.png) · [存储位置与容量](docs/images/storage.png) · [主题下拉菜单](docs/images/controls.png) · [连接权限表单](docs/images/actions.png)
+
+截图来自独立空知识库中的实际 Electron 界面，路径标签使用通用名称，不包含个人资料或凭据。
 
 ## 可以做什么
 
@@ -31,15 +51,15 @@
 
 ## RAG 使用哪些模型
 
-| 环节 | 默认行为 | 可配置项 |
-| --- | --- | --- |
-| 文件解析与 OCR | 本机解析；中英文 OCR 资源随包提供 | OCR 开关、文件大小、目录排除规则 |
-| 全文检索 | SQLite FTS5 + Jieba 中文分词 | 始终可独立使用 |
-| 向量化 | 有公司 Embedding 配置时使用公司接口；否则使用随包 Qwen3-Embedding-0.6B Q8_0 | 切换为固定本地模式或仅全文检索 |
-| 本地推理 | llama.cpp，CPU 运行，无需安装本地聊天大模型 | 初次索引耗时取决于资料数量和电脑性能 |
-| 融合检索 | 全文与向量候选使用 RRF 融合 | 可选择公司 Rerank 接口 |
-| 问答、摘要、记忆建议 | 用户配置的公司模型 | OpenAI 兼容接口或 Anthropic Messages |
-| Agent 回答 | Agent 自己配置的模型 | MCP 返回资料与上下文，不接管客户端模型 |
+| 环节                 | 默认行为                                                                    | 可配置项                               |
+| -------------------- | --------------------------------------------------------------------------- | -------------------------------------- |
+| 文件解析与 OCR       | 本机解析；中英文 OCR 资源随包提供                                           | OCR 开关、文件大小、目录排除规则       |
+| 全文检索             | SQLite FTS5 + Jieba 中文分词                                                | 始终可独立使用                         |
+| 向量化               | 有公司 Embedding 配置时使用公司接口；否则使用随包 Qwen3-Embedding-0.6B Q8_0 | 切换为固定本地模式或仅全文检索         |
+| 本地推理             | llama.cpp，CPU 运行，无需安装本地聊天大模型                                 | 初次索引耗时取决于资料数量和电脑性能   |
+| 融合检索             | 全文与向量候选使用 RRF 融合                                                 | 可选择公司 Rerank 接口                 |
+| 问答、摘要、记忆建议 | 用户配置的公司模型                                                          | OpenAI 兼容接口或 Anthropic Messages   |
+| Agent 回答           | Agent 自己配置的模型                                                        | MCP 返回资料与上下文，不接管客户端模型 |
 
 本地 Qwen 检索模型为 1024 维，模型文件约 610 MiB。公司模型的名称以公司实际部署为准，应用不内置任何公共商业模型账号或 Key。如果已配置的公司向量接口发生故障，会明确提示并保留全文检索；不会将资料自动转送到其他服务商。
 
@@ -59,7 +79,7 @@
 
 支持 PDF、DOCX、PPTX、XLSX、CSV/TSV、Markdown、常见文本与代码、Jupyter Notebook，以及中英文图片/扫描 PDF OCR。Excel 使用已有公式计算结果，Notebook 不索引执行输出。加密文档需先解密；旧版 `.doc/.xls/.ppt` 请先导出为现代格式。压缩包、视频和音频未作为资料类型接入。
 
-默认每文件上限 100 MB，可在设置中调整。OCR 对超大页面和图片设有资源限制，失败原因会显示在资料页。当前界面备份上传上限为 512 MB，恢复的数据库上限为 1 GiB。索引增大时可按工作目录拆分，并由维护人员扩展备份与检索存储实现。删除资料目录只移除索引，不删除原文件。
+默认每文件上限 32 MB，可在设置中调整。OCR 对超大页面和图片设有资源限制，失败原因会显示在资料页。当前界面备份上传上限为 512 MB，恢复的数据库上限为 1 GiB。索引增大时可按工作目录拆分，并由维护人员扩展备份与检索存储实现。删除资料目录只移除索引，不删除原文件。
 
 ## 分享给同事
 

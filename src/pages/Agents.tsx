@@ -10,7 +10,7 @@ import {
 import { useKnowledge } from "../context";
 import { request, copyText } from "../api";
 import type { AgentConnection, ConnectionConfig } from "../types";
-import { Busy, Empty, Modal, date } from "../components/ui";
+import { Select, Busy, Empty, Modal, date } from "../components/ui";
 
 export function Agents() {
   const { data, notify, refresh } = useKnowledge();
@@ -37,9 +37,13 @@ export function Agents() {
       <header className="page-heading">
         <div>
           <h1>Agent 连接</h1>
-          <p>让你常用的 Agent，使用同一份个人知识。</p>
+          <p>管理 MCP 连接与资料访问权限。</p>
         </div>
-        <button className="primary" onClick={() => setEditing("new")}>
+        <button
+          className="primary"
+          onClick={() => setEditing("new")}
+          data-guide="add-connection"
+        >
           <PlusIcon size={17} />
           添加连接
         </button>
@@ -49,7 +53,7 @@ export function Agents() {
           {data.connections.map((connection) => (
             <section className="connection-row" key={connection.id}>
               <div className="connection-heading">
-                <PlugIcon size={31} weight="thin" />
+                <PlugIcon size={31} weight="regular" />
                 <div>
                   <h2>{connection.name}</h2>
                   <p className="muted">
@@ -174,7 +178,7 @@ export function Agents() {
         </div>
       ) : (
         <Empty
-          title="从连接 ZCode 开始"
+          title="暂无 Agent 连接"
           action={
             <button className="primary" onClick={() => setEditing("new")}>
               添加 Agent 连接
@@ -268,7 +272,8 @@ export function ConnectionEditor({
       {!connection && (
         <label>
           客户端
-          <select
+          <Select
+            aria-label="客户端"
             value={kind}
             onChange={(event) => {
               setKind(event.target.value);
@@ -288,7 +293,7 @@ export function ConnectionEditor({
             <option value="codex">Codex</option>
             <option value="claude">Claude Code</option>
             <option value="other">其他支持 MCP 的 Agent</option>
-          </select>
+          </Select>
         </label>
       )}
       <fieldset>
@@ -435,7 +440,7 @@ export function ConfigDialog({
         复制配置
       </button>
       <details className="advanced">
-        <summary>让 Agent 更主动使用知识库</summary>
+        <summary>Agent 调用说明</summary>
         <p>{config.instructions}</p>
         <button
           className="text-action"

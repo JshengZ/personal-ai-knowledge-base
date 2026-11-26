@@ -28,20 +28,20 @@ flowchart LR
 
 ## Modules
 
-| Module | Responsibility |
-| --- | --- |
-| `engine/src/indexer.rs` | Notifications, scans, exclusions, versions, persistent work, and embedding jobs |
-| `desktop/parser.mjs` | Parsing formats into text blocks with stable source locations |
-| `engine/src/store.rs` | Schema, transactions, FTS, vector distance, jobs, and events |
-| `engine/src/retrieval.rs` | Candidate fusion, reranking, context budgets, reads, and proposals |
-| `engine/src/state.rs` | Dynamic permissions, source freshness, service state, and maintenance locks |
-| `engine/src/models.rs` | API adapters, OS credentials, local inference lifecycle |
-| `engine/src/knowledge.rs` | Summaries, evidence, memory review, and revision history |
-| `engine/src/mcp.rs` | Official SDK stdio and Streamable HTTP transports |
-| `engine/src/connections.rs` | Client tokens/configuration and preserving existing ZCode settings |
-| `engine/src/backup.rs` | Consistent snapshots, recovery points, portable restore |
-| `src/pages/` | Setup, projects, search, sources, memories, clients, and settings |
-| `scripts/` | Resources, checksums, local development, packaging, and release audits |
+| Module                      | Responsibility                                                                  |
+| --------------------------- | ------------------------------------------------------------------------------- |
+| `engine/src/indexer.rs`     | Notifications, scans, exclusions, versions, persistent work, and embedding jobs |
+| `desktop/parser.mjs`        | Parsing formats into text blocks with stable source locations                   |
+| `engine/src/store.rs`       | Schema, transactions, FTS, vector distance, jobs, and events                    |
+| `engine/src/retrieval.rs`   | Candidate fusion, reranking, context budgets, reads, and proposals              |
+| `engine/src/state.rs`       | Dynamic permissions, source freshness, service state, and maintenance locks     |
+| `engine/src/models.rs`      | API adapters, OS credentials, local inference lifecycle                         |
+| `engine/src/knowledge.rs`   | Summaries, evidence, memory review, and revision history                        |
+| `engine/src/mcp.rs`         | Official SDK stdio and Streamable HTTP transports                               |
+| `engine/src/connections.rs` | Client tokens/configuration and preserving existing ZCode settings              |
+| `engine/src/backup.rs`      | Consistent snapshots, recovery points, portable restore                         |
+| `src/pages/`                | Setup, projects, search, sources, memories, clients, and settings               |
+| `scripts/`                  | Resources, checksums, local development, packaging, and release audits          |
 
 ## Update consistency
 
@@ -61,13 +61,13 @@ Provider differences belong in `Models`. Chat, embeddings, and reranking are ind
 
 ## MCP contract
 
-| Tool | Purpose |
-| --- | --- |
-| `get_context` | Task-relevant sources, valid project summaries, and visible confirmed memories |
-| `search` | Natural-language/keyword search with project, extension, and time filters |
-| `read_source` | Read a document/chunk with pagination, location, and version |
-| `list_projects` | Authorized projects and valid summaries |
-| `propose_memory` | Submit a pending suggestion for the owner's review |
+| Tool             | Purpose                                                                        |
+| ---------------- | ------------------------------------------------------------------------------ |
+| `get_context`    | Task-relevant sources, valid project summaries, and visible confirmed memories |
+| `search`         | Natural-language/keyword search with project, extension, and time filters      |
+| `read_source`    | Read a document/chunk with pagination, location, and version                   |
+| `list_projects`  | Authorized projects and valid summaries                                        |
+| `propose_memory` | Submit a pending suggestion for the owner's review                             |
 
 The official Rust MCP SDK exposes tool JSON Schemas. Future optional fields should be additive; breaking changes need versioning. Permissions are reloaded during requests, so revocation affects existing sessions. Audit updates cannot overwrite connection permissions.
 
@@ -81,3 +81,25 @@ The official Rust MCP SDK exposes tool JSON Schemas. Future optional fields shou
 - **Migrations:** advance SQLite `user_version` with migration and restore checks. Newer unsupported schemas are rejected; backups have a separate format version.
 
 This is a modular codebase, not a runtime plugin marketplace. Public source and generic installers are distributed through GitHub; user knowledge, credentials, and organization-specific configurations remain outside the release process.
+
+## Storage and scheduling in 1.0.1
+
+The Electron bootstrap directory contains a location pointer and instance lock. A selected data home contains SQLite/WAL, worker temporary files, browser session data, logs and backups. Offline migration holds the source service lock, copies a consistent SQLite snapshot, preserves the credential namespace and connection tokens, checks integrity and installs a redirect. Cleanup runs only after the target service starts. Source files and unrecognized files are preserved.
+
+MCP stdio initialization/tool discovery is independent of backend readiness. HTTP protocol handshakes authenticate from a refreshed in-memory client cache and use the bound port without waiting for the database writer. Data operations use bounded blocking workers; query connections have time budgets. CPU tokenization occurs before the write transaction. Embedding jobs seek bounded rowid windows and use monotonic chunk rowids, avoiding repeated scans from the beginning.
+
+Incremental SQLite counters track documents, chunks, current-model vectors, queue entries and document status. A legacy library gets a background, snapshot-consistent counter backfill. Progress is not recomputed by scanning every chunk during each UI poll. Local auto-mode budgets do not restrict organization Embedding APIs, and explicit local mode retains the CPU model. Windows child workers belong to an engine-owned kill-on-close Job Object; graceful shutdown cancels parsing/model startup, and the desktop waits for service exit before releasing its own files.
+
+Additional modules: `storage.rs` (capacity/migration), `progress.rs` (local-work policy and measured estimates), `counters.rs` (incremental statistics), `processes.rs` (worker lifecycle), `logging.rs` (two-file rolling log). Parsing remains an adapter boundary; adding a heavier optional parser requires platform packaging, licensing and extraction-quality acceptance.
+
+Offline migration persists a source journal and matching copy-ownership marker for copying, ready and published phases. An incomplete owned stage is reclaimed only under the exclusive source lock after proving the original is complete and unchanged. Explicit retries can reuse verified complete copies. Paused interrupted migrations suppress automatic cleanup writes that would change the source revision. Successful target startup and redirect verification remove temporary tracking. VACUUM is not used to reorder chunk rowids.
+
+Capacity quotas count live SQLite pages plus WAL while exposing physical and reusable bytes separately. Reconciliation can process exclusions/deletions when growth is blocked. Durable removing tombstones revoke reads before reclamation; cleanup transactions handle at most 64 chunks with a 4 MiB payload target. Version/root checks prevent stale jobs deleting reindexed content, and low disk or pinned WAL conditions defer cleanup.
+
+The twelve-second response budget applies only to short reads. Summaries, model tests and restore operations await definite outcomes instead of reporting a timeout while a worker still commits. Restore copies validated, allowlisted data into a fresh canonical schema, rebuilding FTS and counters without importing arbitrary triggers, transient cleanup jobs or connection credentials.
+
+The model manager owns its local child before the first health-check await, so a timed-out query can leave the same process warming for the next query. Embedding identity tracks differences in effective endpoint/protocol; default compatible routes retain legacy identities, while changed routes isolate old vectors.
+
+The built-in guide uses steps in `src/guide.ts` and stable data-guide anchors on real controls, changing only the view/settings tab. A native dialog provides modal semantics; cards avoid targets and scroll their body in constrained windows while retaining navigation controls. React Activity preserves visited form state and cleans hidden effects. Completion/dismissal is saved transactionally through `/api/onboarding`, separately from provider drafts, with visible retry on failure.
+
+Installer metadata identifies the checked-out source commit. In CI, a small allowlist of generated runtime-manifest/icon outputs may differ; their SHA-256 values are recorded separately. Any code or other unexpected working-tree change leaves the source unverified and fails the installer provenance check.

@@ -31,16 +31,102 @@ for (const [platform, name] of files) {
 if (!assets.length)
   throw new Error("No installers found for the package version.");
 let commit = null;
+let sourceDirty = null;
+let localChanges = null;
+let generatedOnly = false;
+const generatedAssets = [];
 try {
   commit = execFileSync("git", ["rev-parse", "HEAD"], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
   }).trim();
-} catch {}
+  sourceDirty = Boolean(
+    execFileSync("git", ["status", "--porcelain", "--untracked-files=normal"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim(),
+  );
+  if (sourceDirty) {
+    const trackedChanges = execFileSync(
+      "git",
+      ["diff", "--name-only", "-z", "HEAD"],
+      { encoding: "utf8" },
+    )
+      .split("\0")
+      .filter(Boolean);
+    const untrackedPaths = execFileSync(
+      "git",
+      ["ls-files", "--others", "--exclude-standard", "-z"],
+      { encoding: "utf8" },
+    )
+      .split("\0")
+      .filter(Boolean);
+    const changedPaths = [...new Set([...trackedChanges, ...untrackedPaths])];
+    const generated = new Set([
+      "resources/assets-manifest.json",
+      "resources/icon.png",
+      "resources/tray.png",
+      "build/icon.ico",
+      "build/icon.icns",
+    ]);
+    generatedOnly =
+      process.env.GITHUB_ACTIONS === "true" &&
+      process.env.GITHUB_SHA === commit &&
+      changedPaths.length > 0 &&
+      changedPaths.every(
+        (path) =>
+          generated.has(path) ||
+          (path.startsWith("build/icon.iconset/") && path.endsWith(".png")),
+      );
+    if (generatedOnly) {
+      for (const path of changedPaths.sort())
+        generatedAssets.push({
+          path,
+          sha256: createHash("sha256")
+            .update(await readFile(path))
+            .digest("hex"),
+        });
+    }
+    const digest = createHash("sha256");
+    digest.update(
+      execFileSync("git", ["diff", "--binary", "HEAD"], {
+        maxBuffer: 32 * 1024 * 1024,
+      }),
+    );
+    const untracked = execFileSync(
+      "git",
+      ["ls-files", "--others", "--exclude-standard", "-z"],
+      { encoding: "utf8" },
+    )
+      .split("\0")
+      .filter(Boolean)
+      .sort();
+    for (const path of untracked) {
+      const contents = await readFile(path);
+      digest.update(JSON.stringify([path, contents.length]) + "\n");
+      digest.update(contents);
+    }
+    localChanges = digest.digest("hex");
+  }
+} catch {
+  generatedOnly = false;
+  generatedAssets.length = 0;
+}
 const info = {
   project: "https://github.com/JshengZ/personal-ai-knowledge-base",
   version: pkg.version,
-  source_commit: commit,
+  source_commit: sourceDirty === false || generatedOnly ? commit : null,
+  source_base_commit: commit,
+  source_state:
+    sourceDirty === null
+      ? "unknown"
+      : sourceDirty
+        ? generatedOnly
+          ? "committed-source-with-generated-assets"
+          : "unreleased-working-tree"
+        : "committed-source",
+  generated_assets: generatedAssets,
+  local_changes_sha256: localChanges,
   generated_at: new Date().toISOString(),
   assets,
   embedding_model: {
@@ -49,7 +135,9 @@ const info = {
     license: "Apache-2.0",
   },
   verification:
-    "See docs/verification.md and the GitHub Actions run for the source commit.",
+    sourceDirty === false || generatedOnly
+      ? "See docs/verification.md and the GitHub Actions run for the source commit."
+      : "Unreleased local build. Consult docs/verification.md for local checks; prior GitHub Actions runs do not verify these working-tree changes.",
   application_language: "zh-CN",
   knowledge_data_included: false,
   credentials_included: false,

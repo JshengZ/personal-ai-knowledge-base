@@ -1,0 +1,240 @@
+/* UI controls share the application palette, even when expanded. */
+:root {
+  --control-active: color-mix(in srgb, var(--accent) 55%, var(--line));
+  --focus-halo: color-mix(in srgb, var(--accent) 12%, transparent);
+  --focus-outline: color-mix(in srgb, var(--accent) 65%, var(--paper));
+  --menu-shadow: 0 8px 28px #00000012, 0 2px 6px #00000006;
+}
+:root[data-theme="dark"] {
+  --menu-shadow: 0 10px 30px #00000044;
+}
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--focus-outline);
+  outline-offset: 2px;
+}
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  border-color: var(--control-active);
+  box-shadow: 0 0 0 3px var(--focus-halo);
+}
+.question-bar:focus-within {
+  border-color: var(--control-active);
+  box-shadow: 0 0 0 3px var(--focus-halo);
+}
+.question-bar input:focus-visible {
+  box-shadow: none;
+}
+.theme-option:has(input:checked) {
+  background: var(--selected);
+  border-color: var(--control-active);
+  box-shadow: none;
+}
+.theme-option:has(input:focus-visible),
+.accent-option:has(input:focus-visible),
+.segmented label:has(input:focus-visible) {
+  outline: 2px solid var(--focus-outline);
+  outline-offset: 2px;
+}
+.segmented {
+  padding: 3px;
+  gap: 2px;
+  background: var(--sidebar);
+}
+.segmented label > span {
+  min-height: calc(var(--control-height) - 6px);
+}
+.segmented label:has(input:checked) > span {
+  background: var(--paper);
+  box-shadow: 0 1px 3px #0000000d;
+  color: var(--accent);
+}
+.custom-color-control:has(input:focus-visible) {
+  outline: 2px solid var(--focus-outline);
+  outline-offset: 2px;
+}
+input[type="checkbox"]:not(.switch-input) {
+  appearance: none;
+  position: relative;
+  display: inline-block;
+  flex: 0 0 auto;
+  vertical-align: middle;
+  width: 1.214rem;
+  height: 1.214rem;
+  min-height: 1.214rem;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--muted) 55%, var(--line));
+  border-radius: 4px;
+  background: var(--paper);
+  cursor: pointer;
+}
+input[type="checkbox"]:not(.switch-input):checked {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+input[type="checkbox"]:not(.switch-input)::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  background: var(--on-primary);
+  mask: url("./assets/check.svg") center / contain no-repeat;
+  opacity: 0;
+}
+input[type="checkbox"]:not(.switch-input):checked::after {
+  opacity: 1;
+}
+input[type="checkbox"]:not(.switch-input):hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.checkbox-label {
+  align-items: flex-start;
+}
+.checkbox-label input[type="checkbox"] {
+  margin: 0.2em 0 0;
+}
+input:disabled,
+select:disabled,
+textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+summary::-webkit-details-marker {
+  display: none;
+}
+summary::before {
+  content: "";
+  flex: 0 0 0.9rem;
+  width: 0.9rem;
+  height: 0.9rem;
+  background: currentColor;
+  mask: url("./assets/caret-right.svg") center / contain no-repeat;
+  transition: transform 0.14s;
+}
+details[open] > summary::before {
+  transform: rotate(90deg);
+}
+@supports (appearance: base-select) {
+  select:not([multiple]),
+  select:not([multiple])::picker(select) {
+    appearance: base-select;
+  }
+  select:not([multiple]) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.7rem;
+    padding-inline: 0.8rem;
+    text-overflow: ellipsis;
+    cursor: pointer;
+  }
+  select > button.select-value {
+    all: unset;
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    width: 100%;
+    min-width: 0;
+  }
+  selectedcontent {
+    display: block;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .select-caret {
+    flex: 0 0 1rem;
+    color: var(--muted);
+    transition: transform 0.14s;
+  }
+  select:open .select-caret {
+    transform: rotate(180deg);
+  }
+  select:not([multiple]):open {
+    border-color: var(--control-active);
+    box-shadow: 0 0 0 3px var(--focus-halo);
+  }
+  select:not([multiple])::picker-icon {
+    display: none;
+  }
+  select:not([multiple])::picker(select) {
+    color: var(--ink);
+    background: var(--paper);
+    font: 1rem/1.5 var(--ui-font);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--menu-shadow);
+    padding: 0.35rem;
+    margin-block: 0.4rem;
+    position-try-order: normal;
+    min-inline-size: anchor-size(width);
+    max-inline-size: min(42rem, calc(100vw - 24px));
+    max-block-size: min(24rem, 60dvh);
+    overflow: auto;
+    scrollbar-width: thin;
+  }
+  select:not([multiple]) option {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    min-height: var(--control-height);
+    padding: 0.55rem 0.7rem;
+    border: 0;
+    border-radius: 6px;
+    color: var(--ink);
+    background: transparent;
+    font-weight: 400;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+  }
+  select:not([multiple]) option:hover,
+  select:not([multiple]) option:focus-visible {
+    background: var(--hover);
+    outline: 0;
+  }
+  select:not([multiple]) option:checked {
+    color: var(--accent);
+    background: var(--selected);
+    font-weight: 550;
+  }
+  select:not([multiple]) option::checkmark {
+    content: "";
+    order: 1;
+    flex: 0 0 1rem;
+    width: 1rem;
+    height: 1rem;
+    margin-inline-start: auto;
+    background: var(--accent);
+    mask: url("./assets/check.svg") center / contain no-repeat;
+  }
+}
+
+.danger-action:hover:not(:disabled) {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, var(--paper));
+}
+
+.theme-option:has(input:focus-visible),
+.segmented label:has(input:focus-visible) {
+  border-radius: var(--radius);
+}
+.accent-option:has(input:focus-visible) {
+  border-radius: 50%;
+}
+.custom-color-control.selected {
+  border-color: var(--control-active);
+  background: var(--selected);
+}
+label {
+  overflow-wrap: anywhere;
+}

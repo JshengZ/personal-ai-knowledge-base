@@ -178,6 +178,11 @@ pub struct Settings {
     pub paused: bool,
     pub max_file_mb: u64,
     pub reconcile_seconds: u64,
+    pub min_free_disk_gb: u64,
+    pub max_index_gb: u64,
+    pub indexing_profile: String,
+    pub auto_local_chunk_limit: u64,
+    pub api_embedding_batch_size: usize,
 }
 
 impl Default for Settings {
@@ -194,8 +199,13 @@ impl Default for Settings {
             ocr_enabled: true,
             onboarding_complete: false,
             paused: false,
-            max_file_mb: 100,
+            max_file_mb: 32,
             reconcile_seconds: 300,
+            min_free_disk_gb: 5,
+            max_index_gb: 10,
+            indexing_profile: "balanced".into(),
+            auto_local_chunk_limit: 50_000,
+            api_embedding_batch_size: 32,
         }
     }
 }
@@ -217,6 +227,8 @@ pub struct ServiceInfo {
     pub pid: u32,
     pub token: String,
     pub version: String,
+    #[serde(default)]
+    pub runtime: RuntimeConfig,
 }
 
 #[derive(Clone, Debug)]

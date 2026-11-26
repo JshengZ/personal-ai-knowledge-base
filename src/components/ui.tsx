@@ -1,9 +1,11 @@
 import {
+  createElement,
   useEffect,
   useId,
   useRef,
   type ReactNode,
   type FormEvent,
+  type ComponentPropsWithRef,
 } from "react";
 import {
   FileTextIcon,
@@ -14,17 +16,37 @@ import {
   ImageIcon,
   XIcon,
   SpinnerGapIcon,
+  CaretDownIcon,
 } from "@phosphor-icons/react";
+
+// Keep native select navigation and form behavior. The selected value has its
+// own shrinkable box so long project names do not change the control height.
+export function Select({
+  children,
+  ...props
+}: ComponentPropsWithRef<"select">) {
+  return (
+    <select {...props}>
+      {!props.multiple && (
+        <button type="button" className="select-value">
+          {createElement("selectedcontent")}
+          <CaretDownIcon className="select-caret" size={16} aria-hidden />
+        </button>
+      )}
+      {children}
+    </select>
+  );
+}
 
 export function FileIcon({ extension }: { extension: string }) {
   if (["pdf"].includes(extension))
-    return <FilePdfIcon size={30} weight="thin" aria-hidden />;
+    return <FilePdfIcon size={30} weight="regular" aria-hidden />;
   if (["xlsx", "csv", "tsv"].includes(extension))
-    return <FileXlsIcon size={30} weight="thin" aria-hidden />;
+    return <FileXlsIcon size={30} weight="regular" aria-hidden />;
   if (["pptx"].includes(extension))
-    return <FilePptIcon size={30} weight="thin" aria-hidden />;
+    return <FilePptIcon size={30} weight="regular" aria-hidden />;
   if (["png", "jpg", "jpeg", "tiff", "tif"].includes(extension))
-    return <ImageIcon size={30} weight="thin" aria-hidden />;
+    return <ImageIcon size={30} weight="regular" aria-hidden />;
   if (
     [
       "py",
@@ -44,8 +66,8 @@ export function FileIcon({ extension }: { extension: string }) {
       "json",
     ].includes(extension)
   )
-    return <FileCodeIcon size={30} weight="thin" aria-hidden />;
-  return <FileTextIcon size={30} weight="thin" aria-hidden />;
+    return <FileCodeIcon size={30} weight="regular" aria-hidden />;
+  return <FileTextIcon size={30} weight="regular" aria-hidden />;
 }
 
 export function Busy({ children = "处理中…" }: { children?: ReactNode }) {
@@ -83,6 +105,9 @@ export function Modal({
   submitLabel = "保存",
   busy = false,
   wide = false,
+  cancelLabel = "取消",
+  className = "",
+  focusHeading = false,
 }: {
   title: string;
   children: ReactNode;
@@ -91,14 +116,18 @@ export function Modal({
   submitLabel?: string;
   busy?: boolean;
   wide?: boolean;
+  cancelLabel?: string;
+  className?: string;
+  focusHeading?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const heading = useId();
   useEffect(() => {
     const dialog = ref.current!;
     dialog.showModal();
+    if (focusHeading) dialog.querySelector<HTMLElement>("h2")?.focus();
     return () => dialog.close();
-  }, []);
+  }, [focusHeading]);
   useEffect(() => {
     const dialog = ref.current!;
     const cancel = (event: Event) => {
@@ -113,7 +142,9 @@ export function Modal({
   const content = (
     <>
       <div className="modal-heading">
-        <h2 id={heading}>{title}</h2>
+        <h2 id={heading} tabIndex={focusHeading ? -1 : undefined}>
+          {title}
+        </h2>
         <button
           type="button"
           className="icon-button"
@@ -128,7 +159,7 @@ export function Modal({
       {onSubmit && (
         <div className="modal-footer">
           <button type="button" onClick={onClose} disabled={busy}>
-            取消
+            {cancelLabel}
           </button>
           <button className="primary" type="submit" disabled={busy}>
             {busy ? <Busy /> : submitLabel}
@@ -140,7 +171,11 @@ export function Modal({
   return (
     <dialog
       ref={ref}
-      className={"modal" + (wide ? " modal-wide" : "")}
+      className={
+        "modal" +
+        (wide ? " modal-wide" : "") +
+        (className ? " " + className : "")
+      }
       aria-labelledby={heading}
     >
       {onSubmit ? <form onSubmit={onSubmit}>{content}</form> : content}

@@ -27,7 +27,7 @@ test('code fragments retain Chinese text, symbols and original line positions',a
 
 test('DOCX paragraphs and table-cell text have stable paragraph citations',async()=>{
   const bytes=zipSync({'word/document.xml':strToU8('<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>推荐排序项目</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>LightGBM 的 NDCG 为 0.462</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>')});
-  await fixture('.docx',bytes,async(result)=>{assert.equal(result.blocks[0].text,'推荐排序项目');assert.equal(result.blocks[1].location.label,'第 2 段');assert.match(result.blocks[1].text,/0\.462/);});
+  await fixture('.docx',bytes,async(result)=>{assert.match(result.blocks[0].text,/推荐排序项目/);assert.equal(result.blocks[0].location.label,'第 1–2 段');assert.match(result.blocks[0].text,/0\.462/);});
 });
 
 test('Office text decodes built-in and numeric XML references without resolving custom entities',async()=>{
@@ -80,4 +80,38 @@ test('scanned PDF can be read entirely with local OCR resources',{timeout:180000
   drawing.fillStyle='#ffffff';drawing.fillRect(0,0,1200,350);drawing.fillStyle='#111111';drawing.font='42px Arial';drawing.fillText('LightGBM LambdaRank 0.462',60,120);drawing.fillText('LR baseline 0.438',60,200);
   const document=await PDFDocument.create();const image=await document.embedPng(canvas.toBuffer('image/png'));const page=document.addPage([900,300]);page.drawImage(image,{x:0,y:0,width:900,height:262});
   await fixture('.pdf',await document.save(),async(result)=>{assert.equal(result.ocr,true);assert.match(result.blocks[0].text,/LightGBM/i);assert.match(result.blocks[0].text,/0\.462/);},{ocr_enabled:true});
+});
+
+test('large text and excessive line counts are refused before unbounded character arrays are built',async()=>{
+  await assert.rejects(fixture('.txt','x'.repeat(8*1024*1024+1),()=>{}),/8 MB/);
+  await assert.rejects(fixture('.txt','x\n'.repeat(100001),()=>{}),/10 万行/);
+  await assert.rejects(fixture('.txt','x'.repeat(4*1024*1024+1),()=>{}),/安全上限/);
+});
+
+test('bounded chunk slicing preserves surrogate pairs and includes the last character',async()=>{
+  const text='😀技术资料'.repeat(600)+'FINAL_MARKER';
+  await fixture('.md',text,async(result)=>{
+    assert.ok(result.blocks.length>1);
+    assert.match(result.blocks.at(-1).text,/FINAL_MARKER/);
+    for(const block of result.blocks) assert.ok(!/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/.test(block.text));
+  });
+});
+
+test('short Word paragraphs are grouped while keeping paragraph-range citations',async()=>{
+  const paragraphs=Array.from({length:1000},(_,index)=>'<w:p><w:r><w:t>独立事实 '+(index+1)+'</w:t></w:r></w:p>').join('');
+  await fixture('.docx',zipSync({'word/document.xml':strToU8('<w:document><w:body>'+paragraphs+'</w:body></w:document>')}),async(result)=>{
+    assert.ok(result.blocks.length<100,'one paragraph must not automatically become one embedding');
+    assert.match(result.blocks[0].location.label,/第 1–/);
+    assert.ok(result.blocks.some(block=>block.text.includes('独立事实 1000')));
+    assert.match(result.blocks.at(-1).location.label,/1000 段/);
+  });
+});
+
+test('long text lines do not multiply content through fixed line-count overlap',async()=>{
+  const source=Array.from({length:100},(_,index)=>'line_'+index+' '+'x'.repeat(990)).join('\n');
+  await fixture('.txt',source,async(result)=>{
+    const output=result.blocks.reduce((sum,block)=>sum+block.text.length,0);
+    assert.ok(output<source.length*1.25,'overlap must remain bounded by characters');
+    assert.ok(result.blocks.some(block=>block.location.line_end===100));
+  });
 });

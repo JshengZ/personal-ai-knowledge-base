@@ -1,10 +1,10 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { MagnifyingGlassIcon, ArrowUpRightIcon } from "@phosphor-icons/react";
 import ReactMarkdown from "react-markdown";
 import { request } from "../api";
 import { useKnowledge } from "../context";
 import type { SearchResult } from "../types";
-import { Busy, Empty, FileIcon } from "../components/ui";
+import { Select, Busy, Empty, FileIcon } from "../components/ui";
 
 let submittedQuestion: { query: string; project: string } | null = null;
 
@@ -50,43 +50,59 @@ export function QuestionBar({
 }
 
 export function Search() {
-  const { data, projectId, openSource } = useKnowledge();
+  const { data, openSource } = useKnowledge();
   const initial = submittedQuestion;
   const [query, setQuery] = useState(initial?.query || "");
-  const [scope, setScope] = useState(initial?.project || projectId);
+  const [scope, setScope] = useState(initial?.project || "");
   const [extension, setExtension] = useState("");
   const [result, setResult] = useState<SearchResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [lastQuery, setLastQuery] = useState("");
   const [searchOnly, setSearchOnly] = useState(false);
-  useEffect(() => setScope(projectId), [projectId]);
-  const run = async (text: string, project: string, only = false) => {
+  const requestSequence = useRef(0);
+  const run = async (
+    text: string,
+    project: string,
+    only = false,
+    fileType = extension,
+  ) => {
     if (!text.trim()) return;
+    const sequence = ++requestSequence.current;
     setBusy(true);
     setError("");
     setLastQuery(text);
     setResult(null);
     try {
-      setResult(
-        await request<SearchResult>("POST", only ? "/search" : "/ask", {
+      const value = await request<SearchResult>(
+        "POST",
+        only ? "/search" : "/ask",
+        {
           query: text.trim(),
           project_id: project || null,
           limit: 12,
-          extension: extension || null,
+          extension: fileType || null,
           updated_after: null,
-        }),
+        },
       );
+      if (sequence === requestSequence.current) setResult(value);
     } catch (error) {
-      setError(error instanceof Error ? error.message : "查询失败");
+      if (sequence === requestSequence.current)
+        setError(error instanceof Error ? error.message : "查询失败");
     } finally {
-      setBusy(false);
+      if (sequence === requestSequence.current) setBusy(false);
     }
   };
   useEffect(() => {
     const pending = submittedQuestion;
     submittedQuestion = null;
-    if (pending) void run(pending.query, pending.project);
+    if (pending) {
+      setQuery(pending.query);
+      setScope(pending.project);
+      setExtension("");
+      setSearchOnly(false);
+      void run(pending.query, pending.project, false, "");
+    }
   }, []);
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -105,8 +121,8 @@ export function Search() {
         <h1>搜索与问答</h1>
       </header>
       <form onSubmit={submit} className="search-form">
-        <div className="question-bar">
-          <MagnifyingGlassIcon size={21} weight="thin" aria-hidden />
+        <div className="question-bar" data-guide="search">
+          <MagnifyingGlassIcon size={21} weight="regular" aria-hidden />
           <label className="sr-only" htmlFor="search-question">
             问题或关键词
           </label>
@@ -126,7 +142,8 @@ export function Search() {
         <div className="search-options">
           <label>
             项目范围
-            <select
+            <Select
+              aria-label="项目范围"
               value={scope}
               onChange={(event) => setScope(event.target.value)}
             >
@@ -136,11 +153,12 @@ export function Search() {
                   {project.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
           <label>
             文件类型
-            <select
+            <Select
+              aria-label="文件类型"
               value={extension}
               onChange={(event) => setExtension(event.target.value)}
             >
@@ -152,7 +170,7 @@ export function Search() {
               <option value="xlsx">Excel</option>
               <option value="pptx">PowerPoint</option>
               <option value="csv">CSV</option>
-            </select>
+            </Select>
           </label>
           <label className="checkbox-label">
             <input
@@ -223,7 +241,7 @@ export function Search() {
                     : "全文检索"}
                 </span>
               </div>
-              {result.hits.map((hit, index) => (
+              {result.hits.map((hit) => (
                 <button
                   className="search-hit"
                   key={hit.chunk_id}
@@ -244,16 +262,12 @@ export function Search() {
               ))}
             </section>
           ) : (
-            <Empty title="没有找到相关资料">
-              试试项目名、算法名或文件名，也可以调整检索范围。
-            </Empty>
+            <Empty title="没有找到相关资料">调整关键词或检索范围后重试。</Empty>
           )}
         </div>
       )}
       {!result && !busy && !error && (
-        <Empty title="从你的资料中寻找答案">
-          可以问项目试过的方案、历史决策，或某个技术细节的出处。
-        </Empty>
+        <Empty title="输入关键词或问题">可按项目和文件类型筛选检索范围。</Empty>
       )}
     </>
   );

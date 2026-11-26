@@ -1,14 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Activity, useCallback, useEffect, useRef, useState } from "react";
 import {
   BookOpenIcon,
-  FilesIcon,
-  FoldersIcon,
-  UserIcon,
-  PlugsIcon,
-  GearSixIcon,
-  PlusIcon,
   ArrowRightIcon,
-  ArrowUpRightIcon,
   ArrowsClockwiseIcon,
   WarningCircleIcon,
   XIcon,
@@ -16,9 +9,11 @@ import {
   FolderOpenIcon,
 } from "@phosphor-icons/react";
 import { request, copyText } from "./api";
-import { Context, useKnowledge, type View } from "./context";
+import { Context, useKnowledge, type View, type SettingsTab } from "./context";
+import { Sidebar } from "./components/Sidebar";
+import { useAppearance } from "./appearance";
 import type { Snapshot, SourceResponse } from "./types";
-import { Busy, Empty, Modal, relativeDate } from "./components/ui";
+import { Select, Busy, Modal, relativeDate } from "./components/ui";
 import { Projects } from "./pages/Projects";
 import { Search } from "./pages/Search";
 import { Sources, RootDialog } from "./pages/Sources";
@@ -26,11 +21,38 @@ import { Profile } from "./pages/Profile";
 import { Agents } from "./pages/Agents";
 import { SettingsPage } from "./pages/Settings";
 import { Welcome } from "./pages/Welcome";
+import { ProductTour } from "./components/ProductTour";
+import { guideSteps, type GuideStatus } from "./guide";
 
 export function App() {
+  const {
+    appearance,
+    hydrate,
+    status: appearanceStatus,
+    error: appearanceError,
+    retry: retryAppearance,
+  } = useAppearance();
   const [data, setData] = useState<Snapshot | null>(null);
   const [connectionError, setConnectionError] = useState("");
-  const [view, setView] = useState<View>("projects");
+  const [view, setView] = useState<View>("sources");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("appearance");
+  const [visited, setVisited] = useState<ReadonlySet<View>>(
+    () => new Set(["sources"]),
+  );
+  const [guideIndex, setGuideIndex] = useState<number | null>(null);
+  const [introductionDismissed, setIntroductionDismissed] = useState(false);
+  const [guideSaveError, setGuideSaveError] = useState("");
+  const guideRunning = useRef(false);
+  const guideReturn = useRef<{
+    view: View;
+    tab: SettingsTab;
+    scroll: number;
+    sidebarScroll: number;
+    focus: HTMLElement | null;
+  } | null>(null);
+  const guideQueue = useRef<Promise<void>>(Promise.resolve());
+  const guideRevision = useRef(0);
+  const lastGuideStatus = useRef<GuideStatus>("skipped");
   const [projectId, setProjectId] = useState("");
   const [source, setSource] = useState<{ id: string; chunkId?: string } | null>(
     null,
@@ -84,12 +106,99 @@ export function App() {
     );
   }, []);
   const navigate = useCallback((next: View) => {
+    setVisited((previous) =>
+      previous.has(next) ? previous : new Set([...previous, next]),
+    );
+    if (next === "settings") setSettingsTab("appearance");
     setView(next);
   }, []);
-  const selectProject = useCallback((id: string) => {
-    setProjectId(id);
-    setView("projects");
-  }, []);
+  const selectProject = useCallback(
+    (id: string) => {
+      setProjectId(id);
+      navigate("projects");
+    },
+    [navigate],
+  );
+  const recordGuide = useCallback(
+    (status: GuideStatus) => {
+      lastGuideStatus.current = status;
+      const revision = ++guideRevision.current;
+      setGuideSaveError("");
+      guideQueue.current = guideQueue.current
+        .catch(() => {})
+        .then(async () => {
+          try {
+            await request("PATCH", "/onboarding", { status });
+            if (revision === guideRevision.current) {
+              setGuideSaveError("");
+              await refresh();
+            }
+          } catch (error) {
+            if (revision === guideRevision.current)
+              setGuideSaveError(
+                error instanceof Error ? error.message : "使用指南状态未保存",
+              );
+          }
+        });
+    },
+    [refresh],
+  );
+  const changeGuideStep = useCallback(
+    (index: number) => {
+      const step = guideSteps[index];
+      if (!step) return;
+      navigate(step.view);
+      if (step.tab) setSettingsTab(step.tab);
+      setGuideIndex(index);
+    },
+    [navigate],
+  );
+  const startGuide = useCallback(() => {
+    if (guideRunning.current || rootDialog || source) return;
+    guideRunning.current = true;
+    guideReturn.current = {
+      view,
+      tab: settingsTab,
+      scroll: window.scrollY,
+      sidebarScroll: document.querySelector(".primary-sidebar")?.scrollTop || 0,
+      focus:
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null,
+    };
+    setIntroductionDismissed(true);
+    changeGuideStep(0);
+  }, [view, settingsTab, changeGuideStep, rootDialog, source]);
+  const exitGuide = useCallback(
+    (status: GuideStatus) => {
+      guideRunning.current = false;
+      const origin = guideReturn.current;
+      guideReturn.current = null;
+      setGuideIndex(null);
+      setIntroductionDismissed(true);
+      recordGuide(status);
+      if (origin) {
+        navigate(origin.view);
+        setSettingsTab(origin.tab);
+      }
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          window.scrollTo(0, origin?.scroll || 0);
+          const sidebar = document.querySelector(".primary-sidebar");
+          if (sidebar) sidebar.scrollTop = origin?.sidebarScroll || 0;
+          const focus = origin?.focus?.isConnected
+            ? origin.focus
+            : document.querySelector<HTMLElement>('[aria-current="page"]');
+          focus?.focus({ preventScroll: true });
+        }),
+      );
+    },
+    [navigate, recordGuide],
+  );
+  const skipIntroduction = useCallback(() => {
+    setIntroductionDismissed(true);
+    recordGuide("skipped");
+  }, [recordGuide]);
   const openSource = useCallback(
     (id: string, chunkId?: string) => setSource({ id, chunkId }),
     [],
@@ -97,11 +206,18 @@ export function App() {
   const addRoot = useCallback(() => setRootDialog(true), []);
   const closeRoot = useCallback(() => setRootDialog(false), []);
   const closeSource = useCallback(() => setSource(null), []);
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [view]);
+
+  useEffect(() => {
+    if (data?.appearance) hydrate(data.appearance);
+  }, [data?.appearance, hydrate]);
 
   if (!data)
     return (
       <div className="startup">
-        <BookOpenIcon size={42} weight="thin" />
+        <BookOpenIcon size={42} weight="regular" />
         <h1>个人知识库</h1>
         {connectionError ? (
           <>
@@ -123,201 +239,155 @@ export function App() {
     selectProject,
     openSource,
     addRoot,
+    startGuide,
+    settingsTab,
+    setSettingsTab,
   };
-  const onboarding = !data.settings.onboarding_complete;
-  const currentProject = data.projects.find(
-    (project) => project.id === projectId,
-  );
-  const projectRail = ["projects", "search", "sources"].includes(view);
-  const activePrimary = ["search", "sources"].includes(view)
-    ? "projects"
-    : view;
+  const onboarding =
+    !data.settings.onboarding_complete &&
+    (!data.onboarding || data.onboarding.status === "new") &&
+    !introductionDismissed;
   const working =
-    data.scanning || data.stats.pending > 0 || data.embedding_busy;
+    data.scanning ||
+    data.stats.pending > 0 ||
+    data.embedding_busy ||
+    (data.stats.cleaning ?? 0) > 0;
 
   return (
     <Context.Provider value={context}>
-      {onboarding ? (
-        <Welcome />
-      ) : (
-        <div className="application">
-          <aside className="primary-sidebar">
-            <button
-              className="wordmark"
-              onClick={() => navigate("projects")}
-              aria-label="个人知识库首页"
-            >
-              个人知识库
-            </button>
-            <nav className="primary-navigation" aria-label="主导航">
-              <button
-                className={view === "sources" ? "active" : ""}
-                onClick={() => navigate("sources")}
-                aria-current={view === "sources" ? "page" : undefined}
-              >
-                <FilesIcon size={20} weight="thin" />
-                资料
+      <div
+        className="application"
+        data-sidebar={appearance.sidebar_collapsed ? "collapsed" : "expanded"}
+      >
+        <Sidebar />
+        <main className="workspace">
+          {guideSaveError && (
+            <div className="notice error" role="alert">
+              <span>使用指南状态尚未保存：{guideSaveError}</span>
+              <button onClick={() => recordGuide(lastGuideStatus.current)}>
+                重试保存
               </button>
-              <button
-                className={
-                  activePrimary === "projects" && view !== "sources"
-                    ? "active"
-                    : ""
-                }
-                onClick={() => navigate("projects")}
-                aria-current={
-                  activePrimary === "projects" && view !== "sources"
-                    ? "page"
-                    : undefined
-                }
-              >
-                <FoldersIcon size={20} weight="thin" />
-                项目
-              </button>
-              <button
-                className={view === "profile" ? "active" : ""}
-                onClick={() => navigate("profile")}
-                aria-current={view === "profile" ? "page" : undefined}
-              >
-                <UserIcon size={20} weight="thin" />
-                关于我
-                {data.memories.filter(
-                  (memory) =>
-                    memory.status === "pending" || memory.status === "stale",
-                ).length > 0 && (
-                  <span className="nav-count" aria-label="有记忆待确认">
-                    {
-                      data.memories.filter(
-                        (memory) =>
-                          memory.status === "pending" ||
-                          memory.status === "stale",
-                      ).length
-                    }
-                  </span>
-                )}
-              </button>
-            </nav>
-            <nav className="secondary-navigation" aria-label="连接与设置">
-              <button
-                className={view === "agents" ? "active" : ""}
-                onClick={() => navigate("agents")}
-                aria-current={view === "agents" ? "page" : undefined}
-              >
-                <PlugsIcon size={20} weight="thin" />
-                Agent 连接
-              </button>
-              <button
-                className={view === "settings" ? "active" : ""}
-                onClick={() => navigate("settings")}
-                aria-current={view === "settings" ? "page" : undefined}
-              >
-                <GearSixIcon size={20} weight="thin" />
-                设置
-              </button>
-            </nav>
-            <div className="sidebar-foot">
-              <BookOpenIcon size={18} weight="thin" />
-              {currentProject?.name.includes("示例")
-                ? "示例资料"
-                : "本机资料库"}
             </div>
-          </aside>
-          {projectRail && (
-            <aside className="project-sidebar">
-              <h2>项目</h2>
-              {data.projects.length > 0 ? (
-                <>
-                  <label className="sr-only" htmlFor="project-picker">
-                    当前项目
-                  </label>
-                  <select
-                    id="project-picker"
-                    className="project-picker"
-                    value={projectId}
-                    onChange={(event) => setProjectId(event.target.value)}
-                  >
-                    {data.projects.map((project) => (
-                      <option value={project.id} key={project.id}>
-                        {project.name}
-                      </option>
-                    ))}
-                  </select>
-                  <nav aria-label="项目工作区" className="project-navigation">
-                    <button
-                      className={view === "projects" ? "selected" : ""}
-                      onClick={() => navigate("projects")}
-                    >
-                      {currentProject?.name || "项目概览"}
-                    </button>
-                    <button
-                      className={view === "search" ? "selected" : ""}
-                      onClick={() => navigate("search")}
-                    >
-                      搜索与问答
-                    </button>
-                    <button
-                      className={view === "sources" ? "selected" : ""}
-                      onClick={() => navigate("sources")}
-                    >
-                      资料与同步
-                    </button>
-                  </nav>
-                </>
-              ) : (
-                <p className="muted">添加资料目录后，项目会显示在这里。</p>
-              )}
-              <div className="project-sidebar-bottom">
-                <button className="text-action" onClick={addRoot}>
-                  <PlusIcon size={16} />
-                  添加资料目录
-                </button>
-              </div>
-            </aside>
           )}
-          <main
-            className={"workspace" + (!projectRail ? " workspace-wide" : "")}
-          >
-            {connectionError && (
-              <div className="notice error" role="alert">
-                <WarningCircleIcon size={18} />
-                <span>{connectionError}</span>
-                <button onClick={() => void refresh()}>重试</button>
-              </div>
-            )}
-            {view === "projects" && <Projects />}
-            {view === "search" && <Search />}
-            {view === "sources" && <Sources />}
-            {view === "profile" && <Profile />}
-            {view === "agents" && <Agents />}
-            {view === "settings" && <SettingsPage />}
-            <footer className="workspace-footer">
-              <button
-                className="sync-status"
-                onClick={() => navigate("sources")}
-                aria-label="查看资料同步状态"
+          {appearanceStatus === "error" && (
+            <div className="notice error" role="alert">
+              <span>外观尚未保存：{appearanceError}</span>
+              <button onClick={retryAppearance}>重试保存</button>
+            </div>
+          )}
+          {view === "projects" && data.projects.length > 0 && (
+            <div className="workspace-project-picker">
+              <label htmlFor="project-picker">当前项目</label>
+              <Select
+                id="project-picker"
+                value={projectId}
+                onChange={(event) => setProjectId(event.target.value)}
               >
-                {working ? (
-                  <ArrowsClockwiseIcon className="spin" size={15} />
-                ) : (
-                  <span
-                    className={
-                      "status-dot" + (data.settings.paused ? " paused" : "")
-                    }
-                  />
-                )}{" "}
-                {data.settings.paused
-                  ? "自动同步已暂停"
-                  : working
-                    ? data.embedding_busy &&
-                      !data.scanning &&
-                      data.stats.pending === 0
-                      ? "正在建立语义索引"
-                      : "正在同步资料"
-                    : relativeDate(data.last_indexed || data.last_scan)}
-              </button>
-            </footer>
-          </main>
-        </div>
+                {data.projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          )}
+          {connectionError && (
+            <div className="notice error" role="alert">
+              <WarningCircleIcon size={18} />
+              <span>{connectionError}</span>
+              <button onClick={() => void refresh()}>重试</button>
+            </div>
+          )}
+          {data.storage?.blocked && (
+            <div className="notice error" role="alert">
+              <WarningCircleIcon size={18} />
+              <span>{data.storage.reason}</span>
+              <button onClick={() => navigate("settings")}>管理存储</button>
+            </div>
+          )}
+          {visited.has("projects") && (
+            <Activity mode={view === "projects" ? "visible" : "hidden"}>
+              <Projects />
+            </Activity>
+          )}
+          {visited.has("search") && (
+            <Activity mode={view === "search" ? "visible" : "hidden"}>
+              <Search />
+            </Activity>
+          )}
+          {visited.has("sources") && (
+            <Activity mode={view === "sources" ? "visible" : "hidden"}>
+              <Sources />
+            </Activity>
+          )}
+          {visited.has("profile") && (
+            <Activity mode={view === "profile" ? "visible" : "hidden"}>
+              <Profile />
+            </Activity>
+          )}
+          {visited.has("agents") && (
+            <Activity mode={view === "agents" ? "visible" : "hidden"}>
+              <Agents />
+            </Activity>
+          )}
+          {visited.has("settings") && (
+            <Activity mode={view === "settings" ? "visible" : "hidden"}>
+              <SettingsPage />
+            </Activity>
+          )}
+          <footer className="workspace-footer">
+            <button
+              className="sync-status"
+              onClick={() => navigate("sources")}
+              aria-label="查看资料同步状态"
+            >
+              {working ? (
+                <ArrowsClockwiseIcon className="spin" size={15} />
+              ) : (
+                <span
+                  className={
+                    "status-dot" +
+                    (data.settings.paused || data.storage?.blocked
+                      ? " paused"
+                      : "")
+                  }
+                />
+              )}{" "}
+              {(data.stats.cleaning ?? 0) > 0
+                ? "正在清理已移除资料 · " +
+                  (data.stats.cleaning ?? 0).toLocaleString("zh-CN") +
+                  " 份"
+                : data.storage?.blocked
+                  ? "存储保护：索引已暂停"
+                  : data.settings.paused
+                    ? "自动同步已暂停"
+                    : data.semantic_progress?.protected
+                      ? "全文可用 · 本地向量计算已暂缓"
+                      : working
+                        ? data.embedding_busy &&
+                          !data.scanning &&
+                          data.stats.pending === 0
+                          ? "向量化 " +
+                            (
+                              data.semantic_progress?.completed_vectors || 0
+                            ).toLocaleString("zh-CN") +
+                            " / " +
+                            (
+                              data.semantic_progress?.total_chunks || 0
+                            ).toLocaleString("zh-CN")
+                          : "正在同步资料"
+                        : relativeDate(data.last_indexed || data.last_scan)}
+            </button>
+          </footer>
+        </main>
+      </div>
+      {onboarding && <Welcome onStart={startGuide} onSkip={skipIntroduction} />}
+      {guideIndex !== null && (
+        <ProductTour
+          index={guideIndex}
+          onStep={changeGuideStep}
+          onExit={exitGuide}
+        />
       )}
       {rootDialog && <RootDialog onClose={closeRoot} />}
       {source && (

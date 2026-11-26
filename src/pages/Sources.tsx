@@ -6,18 +6,18 @@ import {
   PlayIcon,
   PencilSimpleIcon,
   TrashIcon,
-  ArrowUpRightIcon,
   FolderIcon,
 } from "@phosphor-icons/react";
 import { request } from "../api";
 import { useKnowledge } from "../context";
 import type { Document, Root } from "../types";
-import { Busy, Empty, FileIcon, Modal, date, size } from "../components/ui";
+import { Select, Empty, FileIcon, Modal, date } from "../components/ui";
+import { IndexProgress } from "../components/IndexProgress";
 
 const statusNames: Record<string, string> = {
-  ready: "已索引",
+  ready: "全文就绪",
   indexing: "正在索引",
-  error: "需要重试",
+  error: "未完成，查看原因",
   empty: "未提取到文字",
 };
 const policyNames: Record<string, string> = {
@@ -26,13 +26,25 @@ const policyNames: Record<string, string> = {
   agents: "允许公司模型与 Agent",
 };
 
+function sourcePath(document: Document, roots: Root[]) {
+  const path = document.path.replace(/^\\\\\?\\/, "").replace(/\\/g, "/");
+  const root = roots.find((item) => item.id === document.root_id);
+  const base = root?.path
+    .replace(/^\\\\\?\\/, "")
+    .replace(/\\/g, "/")
+    .replace(/\/$/, "");
+  return root && base && path.startsWith(base + "/")
+    ? root.name + " / " + path.slice(base.length + 1).replace(/\//g, " / ")
+    : path;
+}
+
 export function Sources() {
-  const { data, projectId, addRoot, openSource, notify, refresh } =
+  const { data, addRoot, openSource, notify, refresh, navigate } =
     useKnowledge();
   const [tab, setTab] = useState<"files" | "roots">("files");
   const [query, setQuery] = useState("");
   const deferred = useDeferredValue(query);
-  const [scope, setScope] = useState(projectId);
+  const [scope, setScope] = useState("");
   const [status, setStatus] = useState("");
   const [documents, setDocuments] = useState<Document[]>([]);
   const [total, setTotal] = useState(0);
@@ -40,7 +52,6 @@ export function Sources() {
   const [removing, setRemoving] = useState<Root | null>(null);
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState("");
-  useEffect(() => setScope(projectId), [projectId]);
   const load = async (offset = 0) => {
     const parameters = new URLSearchParams({
       offset: String(offset),
@@ -105,16 +116,28 @@ export function Sources() {
   };
   return (
     <>
-      <div className="breadcrumb">
-        知识库 <span>/</span> <span>资料与同步</span>
-      </div>
       <header className="page-heading">
-        <h1>资料与同步</h1>
-        <button className="primary" onClick={addRoot}>
+        <div>
+          <h1>资料与同步</h1>
+          <p>管理资料目录和索引状态。</p>
+        </div>
+        <button className="primary" onClick={addRoot} data-guide="add-source">
           <PlusIcon size={17} />
           添加资料目录
         </button>
       </header>
+      <IndexProgress data={data} onSettings={() => navigate("settings")} />
+      {!!data.format_warnings?.length && (
+        <details className="notice">
+          <summary>发现暂不支持的 Office 文件格式，尚未进入索引</summary>
+          {data.format_warnings.map((item) => (
+            <p key={item.root_id + item.extension}>
+              {item.root_name}：{item.count} 个 .{item.extension} 文件。可在
+              Office 中另存为 .docx、.pptx、.xlsx，或导出为 PDF 后加入。
+            </p>
+          ))}
+        </details>
+      )}
       <div className="section-toolbar">
         <div className="tabs" aria-label="资料视图">
           <button
@@ -184,7 +207,7 @@ export function Sources() {
             <label className="sr-only" htmlFor="file-project">
               项目范围
             </label>
-            <select
+            <Select
               id="file-project"
               value={scope}
               onChange={(event) => setScope(event.target.value)}
@@ -195,11 +218,11 @@ export function Sources() {
                   {project.name}
                 </option>
               ))}
-            </select>
+            </Select>
             <label className="sr-only" htmlFor="file-status">
               索引状态
             </label>
-            <select
+            <Select
               id="file-status"
               value={status}
               onChange={(event) => setStatus(event.target.value)}
@@ -210,7 +233,7 @@ export function Sources() {
                   {label}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
           <div className="section-heading">
             <p className="muted">
@@ -232,9 +255,9 @@ export function Sources() {
             <div className="file-table">
               <div className="file-table-head">
                 <span>文件</span>
-                <span>项目</span>
+                <span>所属项目</span>
                 <span>状态</span>
-                <span>更新日期</span>
+                <span>更新时间</span>
               </div>
               {documents.map((document) => (
                 <div className="file-table-row" key={document.id}>
@@ -246,8 +269,8 @@ export function Sources() {
                     <FileIcon extension={document.extension} />
                     <span>
                       <strong>{document.title}</strong>
-                      <small>
-                        {size(document.size)}
+                      <small title={document.path}>
+                        {sourcePath(document, data.roots)}
                         {document.ocr ? " · OCR" : ""}
                       </small>
                     </span>
@@ -289,7 +312,7 @@ export function Sources() {
             </div>
           ) : (
             <Empty
-              title={query || status ? "没有符合条件的文件" : "等待资料加入"}
+              title={query || status ? "没有符合条件的文件" : "暂无资料"}
               action={
                 !data.roots.length ? (
                   <button onClick={addRoot}>选择资料目录</button>
@@ -319,7 +342,7 @@ export function Sources() {
             data.roots.map((root) => (
               <section className="root-row" key={root.id}>
                 <div className="root-heading">
-                  <FolderIcon size={29} weight="thin" />
+                  <FolderIcon size={29} weight="regular" />
                   <div>
                     <h2>{root.name}</h2>
                     <p className="path-text">{root.path}</p>
@@ -370,14 +393,14 @@ export function Sources() {
             ))
           ) : (
             <Empty
-              title="选择需要持续更新的目录"
+              title="暂无资料目录"
               action={
                 <button className="primary" onClick={addRoot}>
                   添加资料目录
                 </button>
               }
             >
-              项目文件、工作文档和笔记都可以加入。
+              添加包含文档、笔记或代码的文件夹。
             </Empty>
           )}
         </div>
@@ -474,6 +497,7 @@ export function RootDialog({
         <div className="input-action">
           <input
             required
+            aria-label="资料目录"
             value={path}
             onChange={(event) => setPath(event.target.value)}
             placeholder={
@@ -498,14 +522,15 @@ export function RootDialog({
       </label>
       <label>
         资料用途
-        <select
+        <Select
+          aria-label="资料用途"
           value={policy}
           onChange={(event) => setPolicy(event.target.value as Root["policy"])}
         >
           <option value="agents">允许公司模型与已连接的 Agent 使用</option>
           <option value="company">允许公司模型，仅在知识库窗口使用</option>
           <option value="local">仅本机检索和阅读</option>
-        </select>
+        </Select>
       </label>
       <details className="advanced">
         <summary>排除规则</summary>
