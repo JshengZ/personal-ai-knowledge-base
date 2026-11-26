@@ -11,8 +11,11 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import electronBinary from "electron";
 import { _electron as electron } from "playwright";
+
+const electronBinary = process.env.PKB_PACKAGED_APP
+  ? undefined
+  : (await import("electron")).default;
 
 async function until(fn, label, timeout = 25000) {
   const start = Date.now();
