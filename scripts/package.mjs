@@ -155,6 +155,9 @@ await build({
     extraResources,
     mac: { identity: process.env.CSC_LINK ? undefined : null },
     win: { signExecutable: !!process.env.CSC_LINK },
+    ...(process.env.PKB_ELECTRON_DIST
+      ? { electronDist: resolve(process.env.PKB_ELECTRON_DIST) }
+      : {}),
     ...(process.env.ELECTRON_MIRROR
       ? { electronDownload: { mirror: process.env.ELECTRON_MIRROR } }
       : {}),

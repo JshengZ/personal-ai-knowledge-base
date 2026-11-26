@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{atomic::Ordering, Arc},
+    time::Duration,
 };
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema, Debug)]
@@ -58,18 +59,27 @@ pub async fn search(
     }
     let mut mode = "keyword".to_string();
     let mut notice = None;
-    if state.models.embedding_available(&settings) {
-        match state
-            .models
-            .embed(&settings, &[request.query.clone()], true)
-            .await
-        {
-            Ok(vectors) => {
-                let model = state.models.embedding_model(&settings);
-                let candidates =
-                    state
-                        .store
-                        .vector_candidates(&model, &vectors[0], 300, &roots, &projects)?;
+    let semantic = crate::progress::snapshot(state, &settings)?;
+    if semantic.protected {
+        notice = semantic.notice;
+    } else if state.embedding_busy.load(Ordering::SeqCst)
+        && !crate::models::Models::remote_embeddings(&settings)
+    {
+        notice =
+            Some("本地模型正在建立索引，本次优先返回全文检索结果；空闲后恢复融合检索。".into());
+    } else if state.models.embedding_available(&settings) {
+        let semantic = async {
+            let vectors = state
+                .models
+                .embed(&settings, &[request.query.clone()], true)
+                .await?;
+            let model = state.models.embedding_model(&settings);
+            state
+                .store
+                .vector_candidates(&model, &vectors[0], 300, &roots, &projects)
+        };
+        match tokio::time::timeout(Duration::from_secs(3), semantic).await {
+            Ok(Ok(candidates)) => {
                 if !candidates.is_empty() {
                     mode = "hybrid".into();
                 }
@@ -77,9 +87,10 @@ pub async fn search(
                     *scores.entry(id.clone()).or_default() += 1.0 / (60.0 + index as f64);
                 }
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 notice = Some(format!("语义检索暂不可用，已使用关键词检索。{}", error));
             }
+            Err(_) => notice = Some("语义检索繁忙，本次已使用全文检索结果。".into()),
         }
     } else if settings.embedding_mode != "disabled" {
         notice = Some(
@@ -124,19 +135,20 @@ pub async fn search(
             }
         }
         if !allowed.is_empty() {
-            match state
-                .models
-                .rerank(
+            match tokio::time::timeout(
+                Duration::from_secs(2),
+                state.models.rerank(
                     &settings,
                     &request.query,
                     &allowed
                         .iter()
                         .map(|hit| hit.text.clone())
                         .collect::<Vec<_>>(),
-                )
-                .await
+                ),
+            )
+            .await
             {
-                Ok(order) => {
+                Ok(Ok(order)) => {
                     let promoted: HashSet<_> = order
                         .iter()
                         .map(|(index, _)| allowed[*index].chunk_id.clone())
@@ -156,7 +168,10 @@ pub async fn search(
                     hits = reranked;
                     mode = "hybrid-rerank".into();
                 }
-                Err(error) => notice = Some(format!("精排暂不可用，已保留基础检索结果。{}", error)),
+                Ok(Err(error)) => {
+                    notice = Some(format!("精排暂不可用，已保留基础检索结果。{}", error))
+                }
+                Err(_) => notice = Some("精排繁忙，已保留基础检索结果。".into()),
             }
         }
     }

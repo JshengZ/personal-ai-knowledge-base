@@ -4,7 +4,29 @@
 
 Initial verification date: **2026-11-25**. Version **1.0.0**. Local build host: Intel macOS 14.6.1. Targets: Intel Mac and Windows x64. All fixtures are synthetic and isolated from real personal work folders.
 
-## Completed local checks
+## 1.0.1 local regression results (2026-11-26)
+
+Added cases exercise stdio initialize/tool discovery with an unresponsive backend; HTTP/stdio and full-text fallback with one async worker and deliberately slow embeddings; HTTP handshakes while the database writer is held; old MCP configurations after migration; cancellation of long parsing; and Windows worker cleanup after forced termination. Desktop GUI tests cover limits, migration/restart, removal of the old database, preservation of originals and resumed filesystem watching, with wide/narrow screenshots.
+
+Additional cases cover local auto budgets, continued department-API/explicit-CPU support, capacity thresholds, incremental counters, long-line overlap, paragraph grouping and project detection. The packaged local-model flow includes longer Chinese chunks. Consult Actions and the execution record for the exact source commit. Synthetic tests are not a million-vector performance benchmark; no private organization corpus is uploaded for validation.
+
+### Completed locally for 1.0.1
+
+| Check | Result |
+| --- | --- |
+| TypeScript / Rust | Type checks and production builds pass; unused frontend declarations checked. |
+| Engine | 16 unit cases pass, including appearance validation/persistence, counters, disk limits, migrations and busy-database MCP handshakes. |
+| Parsers | 14 cases pass, including local OCR, short-paragraph grouping and bounded long-line overlap. |
+| Integration | Real watching, compatible model APIs, standard SDK stdio/HTTP MCP, scopes, memory review and backup/restore pass. The sample generator is removed. |
+| Resilience | 3 cases pass on Mac: hung-backend stdio handshake, slow-embedding responsiveness/FTS/migration, and parser cancellation. The forced-termination Job Object case is Windows-only. |
+| Appearance and storage GUI | All appearance options, custom color input, system theme, reset, unsaved provider fields, actual migration/restart, source preservation and watching pass. |
+| Design / accessibility | All main pages and settings groups checked at 1536/1024/800/390 px, including 18 px base text, dialogs, active navigation and visible save-failure/retry recovery. No related console/page errors. See [design QA](../design-qa.md). |
+| Full Mac package | Five synthetic documents, two projects, six real local vectors, PDF, image OCR, XLSX, citations, MCP and memory review pass without an external model. |
+| Windows package | x64 engine cross-build and assisted NSIS package complete. Both platform audits find only target resources, the pinned model digest, no personal data and no bundled credentials. Cross-building does not replace native Windows acceptance. |
+
+Hosted matrix tests include the Windows-only worker-cleanup case and native Electron appearance/migration flow. Check [Actions](https://github.com/JshengZ/personal-ai-knowledge-base/actions) for the exact commit/run; a configured check is not a passing run. No real company API credentials or documents were used.
+
+## Historical 1.0.0 checks
 
 | Check | Evidence |
 | --- | --- |
@@ -36,7 +58,7 @@ Windows CI backend tests, when successful, are useful additional evidence but do
 - Explicitly selected local folders only; no full-disk crawl, online document connectors, audio/video transcription, or model training.
 - Inferred experience/roles are reviewable suggestions. An agent is not guaranteed to call MCP for every message.
 - Exact cosine search is used for personal collections; small-fixture timing is not a large-scale benchmark.
-- Maximum file setting: 100 MB; backup upload: 512 MB; restored database: 1 GiB. Large OCR pages have resource limits.
+- Maximum file setting: 32 MB; backup upload: 512 MB; restored database: 1 GiB. Large OCR pages have resource limits.
 - No automatic online updates. Quit the old tray application before replacing it; per-user knowledge remains in its data directory.
 
 Maintainers can run `node --test tests/packaged.test.mjs`; `PKB_PACKAGED_APP` selects a particular executable. Package audits use `node scripts/verify-package.mjs mac` or `win`. Shutdown checks allow the background process to finish asynchronous cleanup.

@@ -6,18 +6,18 @@ import {
   PlayIcon,
   PencilSimpleIcon,
   TrashIcon,
-  ArrowUpRightIcon,
   FolderIcon,
 } from "@phosphor-icons/react";
 import { request } from "../api";
 import { useKnowledge } from "../context";
 import type { Document, Root } from "../types";
-import { Busy, Empty, FileIcon, Modal, date, size } from "../components/ui";
+import { Empty, FileIcon, Modal, date } from "../components/ui";
+import { IndexProgress } from "../components/IndexProgress";
 
 const statusNames: Record<string, string> = {
-  ready: "已索引",
+  ready: "全文就绪",
   indexing: "正在索引",
-  error: "需要重试",
+  error: "未完成，查看原因",
   empty: "未提取到文字",
 };
 const policyNames: Record<string, string> = {
@@ -26,13 +26,25 @@ const policyNames: Record<string, string> = {
   agents: "允许公司模型与 Agent",
 };
 
+function sourcePath(document: Document, roots: Root[]) {
+  const path = document.path.replace(/^\\\\\?\\/, "").replace(/\\/g, "/");
+  const root = roots.find((item) => item.id === document.root_id);
+  const base = root?.path
+    .replace(/^\\\\\?\\/, "")
+    .replace(/\\/g, "/")
+    .replace(/\/$/, "");
+  return root && base && path.startsWith(base + "/")
+    ? root.name + " / " + path.slice(base.length + 1).replace(/\//g, " / ")
+    : path;
+}
+
 export function Sources() {
-  const { data, projectId, addRoot, openSource, notify, refresh } =
+  const { data, addRoot, openSource, notify, refresh, navigate } =
     useKnowledge();
   const [tab, setTab] = useState<"files" | "roots">("files");
   const [query, setQuery] = useState("");
   const deferred = useDeferredValue(query);
-  const [scope, setScope] = useState(projectId);
+  const [scope, setScope] = useState("");
   const [status, setStatus] = useState("");
   const [documents, setDocuments] = useState<Document[]>([]);
   const [total, setTotal] = useState(0);
@@ -40,7 +52,6 @@ export function Sources() {
   const [removing, setRemoving] = useState<Root | null>(null);
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState("");
-  useEffect(() => setScope(projectId), [projectId]);
   const load = async (offset = 0) => {
     const parameters = new URLSearchParams({
       offset: String(offset),
@@ -105,16 +116,28 @@ export function Sources() {
   };
   return (
     <>
-      <div className="breadcrumb">
-        知识库 <span>/</span> <span>资料与同步</span>
-      </div>
       <header className="page-heading">
-        <h1>资料与同步</h1>
+        <div>
+          <h1>资料与同步</h1>
+          <p>目录持续更新，检索随时可用。</p>
+        </div>
         <button className="primary" onClick={addRoot}>
           <PlusIcon size={17} />
           添加资料目录
         </button>
       </header>
+      <IndexProgress data={data} onSettings={() => navigate("settings")} />
+      {!!data.format_warnings?.length && (
+        <details className="notice">
+          <summary>发现暂不支持的 Office 文件格式，尚未进入索引</summary>
+          {data.format_warnings.map((item) => (
+            <p key={item.root_id + item.extension}>
+              {item.root_name}：{item.count} 个 .{item.extension} 文件。可在
+              Office 中另存为 .docx、.pptx、.xlsx，或导出为 PDF 后加入。
+            </p>
+          ))}
+        </details>
+      )}
       <div className="section-toolbar">
         <div className="tabs" aria-label="资料视图">
           <button
@@ -232,9 +255,9 @@ export function Sources() {
             <div className="file-table">
               <div className="file-table-head">
                 <span>文件</span>
-                <span>项目</span>
+                <span>所属项目</span>
                 <span>状态</span>
-                <span>更新日期</span>
+                <span>更新时间</span>
               </div>
               {documents.map((document) => (
                 <div className="file-table-row" key={document.id}>
@@ -246,8 +269,8 @@ export function Sources() {
                     <FileIcon extension={document.extension} />
                     <span>
                       <strong>{document.title}</strong>
-                      <small>
-                        {size(document.size)}
+                      <small title={document.path}>
+                        {sourcePath(document, data.roots)}
                         {document.ocr ? " · OCR" : ""}
                       </small>
                     </span>
@@ -319,7 +342,7 @@ export function Sources() {
             data.roots.map((root) => (
               <section className="root-row" key={root.id}>
                 <div className="root-heading">
-                  <FolderIcon size={29} weight="thin" />
+                  <FolderIcon size={29} weight="regular" />
                   <div>
                     <h2>{root.name}</h2>
                     <p className="path-text">{root.path}</p>

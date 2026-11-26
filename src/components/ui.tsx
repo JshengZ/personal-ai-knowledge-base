@@ -18,13 +18,13 @@ import {
 
 export function FileIcon({ extension }: { extension: string }) {
   if (["pdf"].includes(extension))
-    return <FilePdfIcon size={30} weight="thin" aria-hidden />;
+    return <FilePdfIcon size={30} weight="regular" aria-hidden />;
   if (["xlsx", "csv", "tsv"].includes(extension))
-    return <FileXlsIcon size={30} weight="thin" aria-hidden />;
+    return <FileXlsIcon size={30} weight="regular" aria-hidden />;
   if (["pptx"].includes(extension))
-    return <FilePptIcon size={30} weight="thin" aria-hidden />;
+    return <FilePptIcon size={30} weight="regular" aria-hidden />;
   if (["png", "jpg", "jpeg", "tiff", "tif"].includes(extension))
-    return <ImageIcon size={30} weight="thin" aria-hidden />;
+    return <ImageIcon size={30} weight="regular" aria-hidden />;
   if (
     [
       "py",
@@ -44,8 +44,8 @@ export function FileIcon({ extension }: { extension: string }) {
       "json",
     ].includes(extension)
   )
-    return <FileCodeIcon size={30} weight="thin" aria-hidden />;
-  return <FileTextIcon size={30} weight="thin" aria-hidden />;
+    return <FileCodeIcon size={30} weight="regular" aria-hidden />;
+  return <FileTextIcon size={30} weight="regular" aria-hidden />;
 }
 
 export function Busy({ children = "处理中…" }: { children?: ReactNode }) {

@@ -4,14 +4,22 @@
 
 [公开下载与版本说明](https://github.com/JshengZ/personal-ai-knowledge-base/releases) · [完整使用指南](docs/user-guide.zh-CN.md)
 
-![明亮主题工作区，使用虚构示例资料](docs/images/desktop.png)
+![明亮主题工作区，使用隔离的虚构验收资料](docs/images/desktop.png)
+
+支持明亮／深色／跟随系统、主题色、字号与界面密度。[个性化设置](docs/images/appearance.png)即时生效并自动保存。
 
 安装在自己电脑上的知识服务。添加工作资料目录后，应用持续建立索引，通过 MCP 为 ZCode 等 Agent 提供项目背景、原文依据和已确认的个人记忆。资料、数据库和连接凭据保存在本机，不需要 Docker、Python 或终端操作。
 
+## 存储与大目录处理
+
+Windows 安装器支持选择程序目录；首次启动选择独立的数据目录。设置中可迁移已有知识库，复制并校验后才清理旧索引；原始资料保持原位。默认保留 5 GB 可用空间、索引上限 10 GB，可在数据盘容量充足时调整。
+
+资料页分别显示文件处理、文本分块和当前模型向量进度。部门 Embedding API / API Key、随包 Qwen CPU 模型和仅全文三种用法均保留。自动模式的本地预算默认 50,000 个片段，大规模或实测过慢时先保留全文检索；部门 API 不受此本地预算限制，明确选择本地模式也可继续。建议按项目选择资料，排除数据集、缓存和构建产物。
+
 ## 安装与使用
 
-1. 从 [Releases](https://github.com/JshengZ/personal-ai-knowledge-base/releases/latest) 下载 [Mac Intel DMG](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.0/Personal-Knowledge-1.0.0-mac-x64.dmg) 或 [Windows x64 安装包](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.0/Personal-Knowledge-1.0.0-win-x64.exe)。Mac 将应用拖入“应用程序”，Windows 双击按当前用户安装。
-2. 打开应用，点击“选择目录”，选择工作项目、笔记或文档文件夹。可以先点击“用示例资料体验”；示例会单独生成，不会扫描其他目录。
+1. 从 [Releases](https://github.com/JshengZ/personal-ai-knowledge-base/releases/latest) 下载 [Mac Intel DMG](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.1/Personal-Knowledge-1.0.1-mac-x64.dmg) 或 [Windows x64 安装包](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.1/Personal-Knowledge-1.0.1-win-x64.exe)。Mac 将应用拖入“应用程序”，Windows 使用安装向导选择程序目录，按当前用户安装。首次启动另行选择知识库存储位置，索引、缓存和备份可以放在其他磁盘。
+2. 打开应用，点击“选择目录”，选择工作项目、笔记或文档文件夹。
 3. 需要在知识库窗口问答、整理摘要时，在向导或“设置”中填写公司 API 地址、模型名和个人 API Key。只用 MCP 提供资料时，可以稍后配置对话模型，由 ZCode 自己的模型组织回答。
 4. 在“Agent 连接”中添加 ZCode，选择共享项目，点击“一键配置 ZCode”。应用会保留已有配置并自动生成备份。然后在 ZCode 新建会话，询问一个真实项目问题并检查工具调用与原文引用。
 5. 以后将新文件放进已添加的目录即可。文件修改、重命名、删除也会自动核对。关闭窗口后，应用继续在托盘中运行；从托盘或菜单退出会停止当前服务。Agent 的 stdio 连接可以按需再次启动知识服务。
@@ -59,7 +67,7 @@
 
 支持 PDF、DOCX、PPTX、XLSX、CSV/TSV、Markdown、常见文本与代码、Jupyter Notebook，以及中英文图片/扫描 PDF OCR。Excel 使用已有公式计算结果，Notebook 不索引执行输出。加密文档需先解密；旧版 `.doc/.xls/.ppt` 请先导出为现代格式。压缩包、视频和音频未作为资料类型接入。
 
-默认每文件上限 100 MB，可在设置中调整。OCR 对超大页面和图片设有资源限制，失败原因会显示在资料页。当前界面备份上传上限为 512 MB，恢复的数据库上限为 1 GiB。索引增大时可按工作目录拆分，并由维护人员扩展备份与检索存储实现。删除资料目录只移除索引，不删除原文件。
+默认每文件上限 32 MB，可在设置中调整。OCR 对超大页面和图片设有资源限制，失败原因会显示在资料页。当前界面备份上传上限为 512 MB，恢复的数据库上限为 1 GiB。索引增大时可按工作目录拆分，并由维护人员扩展备份与检索存储实现。删除资料目录只移除索引，不删除原文件。
 
 ## 分享给同事
 

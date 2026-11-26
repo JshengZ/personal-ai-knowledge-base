@@ -1,13 +1,19 @@
 mod api;
+mod appearance;
 mod backup;
 mod connections;
+mod counters;
 mod indexer;
 mod knowledge;
+mod logging;
 mod mcp;
 mod models;
 mod parser;
+mod processes;
+mod progress;
 mod retrieval;
 mod state;
+mod storage;
 mod store;
 #[cfg(test)]
 mod tests;
@@ -38,6 +44,10 @@ struct Arguments {
 #[derive(Subcommand)]
 enum Mode {
     Serve,
+    MigrateData {
+        #[arg(long)]
+        destination: PathBuf,
+    },
     Mcp {
         #[arg(long)]
         connection: String,
@@ -46,11 +56,8 @@ enum Mode {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter("warn")
-        .init();
     if let Err(error) = run().await {
+        tracing::error!(error=%format!("{error:#}"),"knowledge service failed");
         eprintln!("{error:#}");
         std::process::exit(1);
     }
@@ -58,7 +65,11 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let arguments = Arguments::parse();
-    let home = arguments.home.unwrap_or_else(default_home);
+    let home = storage::resolve_home(&arguments.home.unwrap_or_else(default_home))?;
+    if let Mode::MigrateData { destination } = &arguments.command {
+        println!("{}", storage::migrate(&home, destination)?);
+        return Ok(());
+    }
     std::fs::create_dir_all(&home)?;
     #[cfg(unix)]
     {
@@ -75,6 +86,7 @@ async fn run() -> Result<()> {
     match arguments.command {
         Mode::Serve => serve(home, runtime).await,
         Mode::Mcp { connection } => mcp::stdio(&home, connection, runtime).await,
+        Mode::MigrateData { .. } => unreachable!(),
     }
 }
 
@@ -93,6 +105,12 @@ async fn serve(home: PathBuf, runtime: RuntimeConfig) -> Result<()> {
     if lock.try_lock_exclusive().is_err() {
         return Ok(());
     }
+    logging::initialize(&home)?;
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        pid = std::process::id(),
+        "knowledge service starting"
+    );
     let app = state::AppState::new(home.clone(), runtime.clone())?;
     let preferred = app.store.metadata::<u16>("http_port")?.unwrap_or(17481);
     let listener =
@@ -101,6 +119,7 @@ async fn serve(home: PathBuf, runtime: RuntimeConfig) -> Result<()> {
             Err(_) => tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?,
         };
     let port = listener.local_addr()?.port();
+    tracing::info!(port, "loopback HTTP and MCP listener ready");
     app.store.set_metadata("http_port", &port)?;
     let token = format!(
         "{}{}",
@@ -112,9 +131,17 @@ async fn serve(home: PathBuf, runtime: RuntimeConfig) -> Result<()> {
         pid: std::process::id(),
         token: token.clone(),
         version: env!("CARGO_PKG_VERSION").into(),
+        runtime: runtime.clone(),
     };
     connections::private_write(&home.join("service.json"), &serde_json::to_vec(&info)?)?;
-    let mut router = api::router(app.clone(), token);
+    if let Err(error) = storage::finish_migration(&home) {
+        let _ = app.store.event(
+            "storage",
+            "迁移已完成，旧位置部分文件仍待清理",
+            serde_json::json!({"error":error.to_string()}),
+        );
+    }
+    let mut router = api::router(app.clone(), token, port);
     if runtime.web_root.is_dir() {
         router = router.fallback_service(
             ServeDir::new(&runtime.web_root)
@@ -122,9 +149,14 @@ async fn serve(home: PathBuf, runtime: RuntimeConfig) -> Result<()> {
         );
     }
     let worker = app.clone();
-    tokio::spawn(async move {
-        indexer::run(worker).await;
+    let counting = app.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Err(error) = crate::counters::backfill(&counting.store) {
+            tracing::warn!(%error,"progress counter initialization interrupted");
+        }
     });
+    let runtime_handle = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || runtime_handle.block_on(indexer::run(worker)));
     let stopping = app.clone();
     axum::serve(listener, router)
         .with_graceful_shutdown(async move {
@@ -143,6 +175,7 @@ async fn serve(home: PathBuf, runtime: RuntimeConfig) -> Result<()> {
     app.parser.stop().await;
     let _ = std::fs::remove_file(home.join("service.json"));
     let _ = lock.unlock();
+    tracing::info!("knowledge service stopped; parser and model workers released");
     Ok(())
 }
 
@@ -152,6 +185,9 @@ pub async fn ensure_service(home: &Path, runtime: &RuntimeConfig) -> Result<Serv
         .build()?;
     if let Some(info) = read_service(home) {
         if healthy(&client, &info).await {
+            if info.version != env!("CARGO_PKG_VERSION") {
+                bail!("后台服务版本需要升级，请先打开新版知识库应用");
+            }
             return Ok(info);
         }
     }
@@ -159,11 +195,17 @@ pub async fn ensure_service(home: &Path, runtime: &RuntimeConfig) -> Result<Serv
         connections::private_write(&home.join("runtime.json"), &serde_json::to_vec(runtime)?)?;
     }
     let executable = std::env::current_exe()?;
+    let temporary = home.join("tmp");
+    std::fs::create_dir_all(&temporary)?;
     let mut command = Command::new(executable);
     command
         .arg("serve")
         .arg("--home")
         .arg(home)
+        .current_dir(&temporary)
+        .env("TMPDIR", &temporary)
+        .env("TEMP", &temporary)
+        .env("TMP", &temporary)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

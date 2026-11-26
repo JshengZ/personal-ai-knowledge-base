@@ -27,7 +27,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error":self.0.to_string()})),
+            Json(json!({"error":crate::storage::error_message(&self.0)})),
         )
             .into_response()
     }
@@ -42,6 +42,7 @@ macro_rules! bail {
 pub struct ApiState {
     pub app: Arc<AppState>,
     pub token: String,
+    pub port: u16,
 }
 
 async fn owner_auth(State(state): State<ApiState>, request: Request, next: Next) -> Response {
@@ -77,8 +78,8 @@ pub fn origin_allowed(headers: &HeaderMap) -> bool {
         && matches!(url.scheme(), "http" | "https")
 }
 
-pub fn router(app: Arc<AppState>, token: String) -> Router {
-    let state = ApiState { app, token };
+pub fn router(app: Arc<AppState>, token: String, port: u16) -> Router {
+    let state = ApiState { app, token, port };
     let owner = Router::new()
         .route("/health", get(health))
         .route("/state", get(snapshot))
@@ -94,6 +95,8 @@ pub fn router(app: Arc<AppState>, token: String) -> Router {
         .route("/memories", post(propose))
         .route("/memories/{id}", patch(update_memory).delete(remove_memory))
         .route("/settings", patch(save_settings))
+        .route("/appearance", get(get_appearance).patch(save_appearance))
+        .route("/storage/validate", post(validate_storage))
         .route("/models/test/{kind}", post(test_model))
         .route("/connections", post(create_connection))
         .route("/connections/{id}", patch(update_connection))
@@ -102,7 +105,6 @@ pub fn router(app: Arc<AppState>, token: String) -> Router {
         .route("/connections/{id}/test", post(test_connection))
         .route("/backups/export", get(export_backup))
         .route("/backups/restore", post(restore_backup))
-        .route("/demo", post(demo))
         .route("/shutdown", post(shutdown))
         .layer(middleware::from_fn_with_state(state.clone(), owner_auth))
         .layer(DefaultBodyLimit::max(512 * 1024 * 1024));
@@ -110,7 +112,36 @@ pub fn router(app: Arc<AppState>, token: String) -> Router {
         .nest("/api", owner)
         .route("/agent/{id}/{tool}", post(agent_tool))
         .route("/mcp/{id}", axum::routing::any(crate::mcp::http_handler))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            isolate_requests,
+        ))
         .with_state(state)
+}
+
+async fn isolate_requests(State(state): State<ApiState>, request: Request, next: Next) -> Response {
+    // Keep protocol handshakes and health checks on the async runtime. Database
+    // and parsing work runs on a bounded set of separate blocking threads.
+    let path = request.uri().path();
+    if path == "/api/health"
+        || path == "/api/shutdown"
+        || path.starts_with("/mcp/")
+        || !path.starts_with("/api/") && !path.starts_with("/agent/")
+    {
+        return next.run(request).await;
+    }
+    let Ok(permit) = state.app.requests.clone().try_acquire_owned() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"知识服务正在处理其他请求，请稍后重试。索引可在资料页暂停。","code":"busy"}))).into_response();
+    };
+    let handle = tokio::runtime::Handle::current();
+    let work = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        handle.block_on(next.run(request))
+    });
+    match tokio::time::timeout(std::time::Duration::from_secs(12), work).await {
+        Ok(Ok(response)) => response,
+        _ => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"知识服务忙碌，本次请求已超时。请暂停索引或稍后重试。","code":"busy"}))).into_response(),
+    }
 }
 
 async fn health() -> Json<Value> {
@@ -119,19 +150,39 @@ async fn health() -> Json<Value> {
 
 async fn snapshot(State(state): State<ApiState>) -> ApiResult {
     let app = &state.app;
-    let mut documents = app.store.documents()?;
+    let mut documents = app.store.recent_documents(100)?;
     documents.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     let settings = app.store.settings()?;
     let semantic_error = app.semantic_error.read().await.clone();
+    let mut stats = app.store.stats()?;
+    let mut discovered = 0u64;
+    let mut format_warnings = vec![];
+    for root in app.store.roots()?.iter().filter(|root| root.enabled) {
+        discovered += app
+            .store
+            .metadata::<u64>(&format!("scan_found:{}", root.id))?
+            .unwrap_or(0);
+        for (extension, count) in app
+            .store
+            .metadata::<HashMap<String, u64>>(&format!("scan_formats:{}", root.id))?
+            .unwrap_or_default()
+        {
+            format_warnings.push(json!({"root_id":root.id,"root_name":root.name,"extension":extension,"count":count}));
+        }
+    }
+    stats["discovered"] = json!(discovered
+        .max(stats["documents"].as_u64().unwrap_or(0) + stats["pending"].as_u64().unwrap_or(0)));
     Ok(Json(
         json!({"version":env!("CARGO_PKG_VERSION"),"roots":app.store.roots()?,"projects":app.store.projects()?,
         "documents":documents.into_iter().take(100).collect::<Vec<_>>(),"memories":app.store.memories()?,
-        "connections":app.store.connections()?,"stats":app.store.stats()?,"settings":settings,
+        "connections":app.store.connections()?,"stats":stats,"settings":settings,
         "events":app.store.events(60)?,"last_indexed":app.store.metadata::<String>("last_indexed")?,
         "last_scan":app.store.metadata::<String>("last_scan")?,"scanning":app.scanning.load(Ordering::SeqCst),
         "embedding_busy":app.embedding_busy.load(Ordering::SeqCst),"embedding_available":app.models.embedding_available(&settings),
         "embedding_model":app.models.embedding_model(&settings),"semantic_error":semantic_error,"data_directory":app.home,
-        "demo_created":app.store.metadata::<bool>("demo_created")?.unwrap_or(false)}),
+        "storage":crate::storage::status(&app.home,&settings,64*1024*1024)?,
+        "semantic_progress":crate::progress::snapshot(app,&settings)?,
+        "format_warnings":format_warnings,"appearance":crate::appearance::load(&app.store)?}),
     ))
 }
 
@@ -168,12 +219,16 @@ async fn documents(
 }
 
 fn add_root_impl(app: &AppState, input: &Value) -> Result<Root> {
+    crate::storage::require_capacity(&app.home, &app.store.settings()?, 64 * 1024 * 1024)?;
     let raw = input["path"].as_str().context("请选择资料目录")?;
     let path = std::path::Path::new(raw)
         .canonicalize()
         .context("目录无法访问，请重新选择")?;
     if !path.is_dir() {
         bail!("请选择一个文件夹");
+    }
+    if path.parent().is_none() {
+        bail!("请选择具体的项目或资料文件夹，不支持直接索引整块磁盘");
     }
     if path.starts_with(&app.home) || app.home.starts_with(&path) {
         bail!("知识库的数据目录已由应用管理，请选择原始资料目录");
@@ -218,6 +273,13 @@ fn add_root_impl(app: &AppState, input: &Value) -> Result<Root> {
     app.store.ensure_project(&root.path, &root.name)?;
     app.wake.notify_one();
     Ok(root)
+}
+
+async fn validate_storage(State(state): State<ApiState>, Json(input): Json<Value>) -> ApiResult {
+    let raw = input["path"].as_str().context("请选择新的数据目录")?;
+    let destination =
+        crate::storage::validate_destination(&state.app.home, std::path::Path::new(raw))?;
+    Ok(Json(json!({"path":destination})))
 }
 
 async fn add_root(State(state): State<ApiState>, Json(input): Json<Value>) -> ApiResult {
@@ -412,6 +474,15 @@ async fn remove_memory(State(state): State<ApiState>, Path(id): Path<String>) ->
     Ok(Json(json!({"ok":true})))
 }
 
+async fn get_appearance(State(state): State<ApiState>) -> ApiResult {
+    Ok(Json(json!(crate::appearance::load(&state.app.store)?)))
+}
+
+async fn save_appearance(State(state): State<ApiState>, Json(input): Json<Value>) -> ApiResult {
+    let _maintenance = state.app.maintenance.read().await;
+    Ok(Json(json!(crate::appearance::update(&state.app.store, input)?)))
+}
+
 async fn save_settings(State(state): State<ApiState>, Json(mut input): Json<Value>) -> ApiResult {
     let app = &state.app;
     let _maintenance = app.maintenance.read().await;
@@ -445,7 +516,14 @@ async fn save_settings(State(state): State<ApiState>, Json(mut input): Json<Valu
     if !["openai", "anthropic"].contains(&settings.chat.protocol.as_str()) {
         bail!("对话协议无效");
     }
-    settings.max_file_mb = settings.max_file_mb.clamp(1, 100);
+    settings.max_file_mb = settings.max_file_mb.clamp(1, 32);
+    settings.min_free_disk_gb = settings.min_free_disk_gb.clamp(2, 100);
+    settings.max_index_gb = settings.max_index_gb.clamp(1, 1024);
+    settings.auto_local_chunk_limit = settings.auto_local_chunk_limit.clamp(1000, 10_000_000);
+    settings.api_embedding_batch_size = settings.api_embedding_batch_size.clamp(1, 128);
+    if !["low", "balanced", "performance"].contains(&settings.indexing_profile.as_str()) {
+        bail!("索引资源占用选项无效");
+    }
     settings.reconcile_seconds = settings.reconcile_seconds.clamp(30, 3600);
     for (kind, provider) in [
         ("chat", &mut settings.chat),
@@ -544,47 +622,6 @@ async fn export_backup(State(state): State<ApiState>) -> std::result::Result<Res
 }
 async fn restore_backup(State(state): State<ApiState>, bytes: Bytes) -> ApiResult {
     Ok(Json(backup::restore(&state.app, bytes.to_vec()).await?))
-}
-
-async fn demo(State(state): State<ApiState>) -> ApiResult {
-    let _maintenance = state.app.maintenance.read().await;
-    let directory = state
-        .app
-        .home
-        .with_file_name(format!(
-            "个人知识库示例资料-{}",
-            &blake3::hash(state.app.home.to_string_lossy().as_bytes()).to_hex()[..8]
-        ))
-        .join("推荐排序");
-    std::fs::create_dir_all(&directory)?;
-    let directory = directory.canonicalize()?;
-    let experiment="# 排序实验\n\n这些内容是产品体验用的示例资料。\n\n## 项目目标\n比较排序模型的离线效果，验证上线方案。\n\n## 实验\n使用统一的验证集比较 LR 基线和 LightGBM。\nLightGBM 的 NDCG@10 为 0.462，LR 为 0.438。\n\n## 方案\n下一轮灰度采用 LightGBM LambdaRank，LR 作为对照基线。\n";
-    std::fs::write(directory.join("排序实验.md"), experiment)?;
-    std::fs::write(directory.join("train_lgbm.py"),"# 产品示例训练配置\nparams = {\n    'objective': 'lambdarank',\n    'metric': 'ndcg',\n    'ndcg_eval_at': [10],\n}\n# LightGBM LambdaRank；LR 用于基线对照。\n")?;
-    std::fs::write(directory.join("上线决策.md"),"# 上线决策\n\n## 候选方案\n采用 LightGBM 进入灰度验证，保留 LR 作为对照基线。\n\n## 后续观察\n继续观测线上延迟和高峰负载。\n")?;
-    let path = directory.to_string_lossy().into_owned();
-    if !state
-        .app
-        .store
-        .roots()?
-        .iter()
-        .any(|root| root.path == path)
-    {
-        add_root_impl(
-            &state.app,
-            &json!({"path":path,"name":"推荐排序 · 示例","policy":"agents"}),
-        )?;
-    }
-    let mut project = state.app.store.ensure_project(&path, "推荐排序 · 示例")?;
-    project.goal = "比较排序模型的效果，验证上线方案。".into();
-    project.approach = "采用 LightGBM LambdaRank，保留 LR 作为对照基线。".into();
-    project.decisions = vec![Decision {
-        date: chrono::Local::now().format("%Y-%m-%d").to_string(),
-        text: "示例项目进入灰度验证".into(),
-    }];
-    state.app.store.save_project(&project)?;
-    state.app.store.set_metadata("demo_created", &true)?;
-    Ok(Json(json!({"ok":true,"project_id":project.id})))
 }
 
 async fn shutdown(State(state): State<ApiState>) -> Json<Value> {

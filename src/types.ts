@@ -1,3 +1,12 @@
+export interface Appearance {
+  theme: "light" | "dark" | "system";
+  accent: string;
+  font_size: 13 | 14 | 16 | 18;
+  reading_font: "sans" | "serif";
+  density: "comfortable" | "compact";
+  sidebar_collapsed: boolean;
+}
+
 export interface Location {
   label: string;
   page?: number;
@@ -126,6 +135,18 @@ export interface Settings {
   paused: boolean;
   max_file_mb: number;
   reconcile_seconds: number;
+  min_free_disk_gb: number;
+  max_index_gb: number;
+  indexing_profile: "low" | "balanced" | "performance";
+  auto_local_chunk_limit: number;
+  api_embedding_batch_size: number;
+}
+export interface StorageInfo {
+  data_directory: string;
+  install_directory: string;
+  available_bytes: number;
+  total_bytes: number;
+  items: { name: string; bytes: number }[];
 }
 export interface ActivityEvent {
   id: number;
@@ -147,6 +168,12 @@ export interface Snapshot {
     vectors: number;
     pending: number;
     projects: number;
+    ready: number;
+    errors: number;
+    empty: number;
+    indexing: number;
+    initialized: boolean;
+    discovered: number;
   };
   settings: Settings;
   events: ActivityEvent[];
@@ -158,7 +185,33 @@ export interface Snapshot {
   embedding_model: string;
   semantic_error: string | null;
   data_directory: string;
-  demo_created: boolean;
+  appearance: Appearance;
+  format_warnings: {
+    root_id: string;
+    root_name: string;
+    extension: string;
+    count: number;
+  }[];
+  semantic_progress: {
+    mode: "disabled" | "api" | "local";
+    model: string;
+    total_chunks: number;
+    completed_vectors: number;
+    counts_ready: boolean;
+    vectors_per_second: number | null;
+    estimated_seconds: number | null;
+    protected: boolean;
+    notice: string | null;
+  };
+  storage: {
+    available_bytes: number;
+    index_bytes: number;
+    wal_bytes: number;
+    reserve_bytes: number;
+    limit_bytes: number;
+    blocked: boolean;
+    reason: string | null;
+  };
 }
 export interface SourceResponse {
   document: Document;
@@ -178,6 +231,7 @@ export interface ConnectionConfig {
 declare global {
   interface Window {
     knowledge?: {
+      initialAppearance?: Appearance;
       request: (
         method: string,
         path: string,
@@ -186,10 +240,19 @@ declare global {
       chooseDirectory: () => Promise<string | null>;
       openSource: (id: string) => Promise<void>;
       revealData: () => Promise<void>;
+      storageInfo: () => Promise<StorageInfo>;
+      prepareStorageMove: () => Promise<{
+        path: string;
+        source_bytes: number;
+        available_bytes: number;
+      } | null>;
+      storageProgress: () => Promise<string>;
+      moveStorage: (path: string) => Promise<void>;
       exportBackup: () => Promise<string | null>;
       restoreBackup: () => Promise<unknown>;
       autostart: (enabled?: boolean) => Promise<boolean>;
       copy: (text: string) => Promise<void>;
+      setTheme: (theme: Appearance["theme"]) => Promise<void>;
     };
   }
 }

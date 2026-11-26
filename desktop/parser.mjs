@@ -14,7 +14,20 @@ const xml = new XMLParser({
   processEntities: false,
   trimValues: false,
 });
-const maximumBytes = 100 * 1024 * 1024;
+const maximumBytes = 32 * 1024 * 1024;
+const maximumCharacters = 4 * 1024 * 1024;
+
+function blockList() {
+  const blocks = [];
+  let characters = 0;
+  blocks.push = (...items) => {
+    characters += items.reduce((sum, item) => sum + item.text.length, 0);
+    if (characters > maximumCharacters || blocks.length + items.length > 5000)
+      throw new Error("解析结果超过安全上限，请拆分文档后加入。");
+    return Array.prototype.push.apply(blocks, items);
+  };
+  return blocks;
+}
 
 function xmlText(value) {
   const named = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
@@ -65,12 +78,18 @@ function descendants(nodes, tag, found = []) {
 }
 
 function splitText(text, location) {
-  const characters = Array.from(text.trim());
-  const blocks = [];
-  for (let offset = 0; offset < characters.length; offset += 1400) {
-    const piece = characters.slice(offset, offset + 1600).join("");
+  text = text.trim();
+  if (text.length > maximumCharacters)
+    throw new Error("正文超过安全上限，请拆分文档后加入。");
+  const blocks = blockList();
+  for (let offset = 0; offset < text.length;) {
+    let end = Math.min(text.length, offset + 2400);
+    if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1])) end--;
+    const piece = text.slice(offset, end);
     if (piece.trim()) blocks.push({ text: piece, location });
-    if (offset + 1600 >= characters.length) break;
+    if (end >= text.length) break;
+    offset += 2160;
+    if (/[\uDC00-\uDFFF]/.test(text[offset])) offset++;
   }
   return blocks;
 }
@@ -84,6 +103,8 @@ function decode(bytes) {
 }
 
 function parseText(bytes, extension) {
+  if (bytes.length > 8 * 1024 * 1024)
+    throw new Error("文本文件超过 8 MB 的安全上限，请拆分后加入。");
   let text = decode(bytes).replace(/^\uFEFF/, "");
   if (text.includes("\u0000"))
     throw new Error("文件包含二进制内容，无法作为文本读取。");
@@ -100,7 +121,7 @@ function parseText(bytes, extension) {
   }
   if (extension === ".ipynb") {
     const notebook = JSON.parse(text);
-    const blocks = [];
+    const blocks = blockList();
     for (const [index, cell] of (notebook.cells || []).entries()) {
       if (!["code", "markdown"].includes(cell.cell_type)) continue;
       const content = Array.isArray(cell.source)
@@ -112,18 +133,20 @@ function parseText(bytes, extension) {
     }
     return { blocks, ocr: false };
   }
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
-  const blocks = [];
+  const lines = text.replace(/\r\n/g, "\n").split("\n", 100002);
+  if (lines.length > 100000)
+    throw new Error("文本超过 10 万行，请拆分后加入。");
+  const blocks = blockList();
   let start = 0;
   while (start < lines.length) {
     let end = start;
     let size = 0;
     while (
       end < lines.length &&
-      end - start < 55 &&
-      (size < 1600 || end === start)
+      end - start < 80 &&
+      (size < 2400 || end === start)
     ) {
-      size += Array.from(lines[end]).length + 1;
+      size += lines[end].length + 1;
       end++;
     }
     const content = lines.slice(start, end).join("\n").trim();
@@ -134,7 +157,16 @@ function parseText(bytes, extension) {
     };
     blocks.push(...splitText(content, location));
     if (end === lines.length) break;
-    start = Math.max(start + 1, end - 5);
+    // Bound overlap by characters, not a fixed five lines. Long lines used to
+    // repeat most of the previous block and multiply the embedding workload.
+    const budget = Math.min(240, Math.floor(size * 0.1));
+    let overlap = 0;
+    let next = end;
+    while (next > start + 1 && overlap + lines[next - 1].length + 1 <= budget) {
+      overlap += lines[next - 1].length + 1;
+      next--;
+    }
+    start = Math.max(start + 1, next);
   }
   return { blocks, ocr: false };
 }
@@ -145,7 +177,7 @@ function officeEntries(bytes, pattern) {
     filter(entry) {
       if (!pattern.test(entry.name)) return false;
       total += entry.originalSize;
-      if (entry.originalSize > 40 * 1024 * 1024 || total > 120 * 1024 * 1024)
+      if (entry.originalSize > 8 * 1024 * 1024 || total > 32 * 1024 * 1024)
         throw new Error("文档解压后的内容过大。");
       return true;
     },
@@ -163,12 +195,35 @@ function parseDocx(bytes) {
     xml.parse(decode(entries["word/document.xml"])),
     "w:p",
   );
-  const blocks = [];
-  for (const [index, paragraph] of paragraphs.entries()) {
+  const blocks = blockList();
+  let group = [];
+  let groupStart = 1;
+  let groupEnd = 1;
+  let groupSize = 0;
+  const flush = () => {
+    if (!group.length) return;
     blocks.push(
-      ...splitText(textOf(paragraph), { label: "第 " + (index + 1) + " 段" }),
+      ...splitText(group.join("\n"), {
+        label:
+          groupStart === groupEnd
+            ? "第 " + groupStart + " 段"
+            : "第 " + groupStart + "–" + groupEnd + " 段",
+      }),
     );
+    group = [];
+    groupSize = 0;
+  };
+  for (const [index, paragraph] of paragraphs.entries()) {
+    const text = textOf(paragraph).trim();
+    if (!text) continue;
+    if (groupSize + text.length + 1 > 2400) flush();
+    if (!group.length) groupStart = index + 1;
+    group.push(text);
+    groupEnd = index + 1;
+    groupSize += text.length + 1;
+    if (groupSize >= 2160) flush();
   }
+  flush();
   for (const name of ["word/footnotes.xml", "word/endnotes.xml"]) {
     if (!entries[name]) continue;
     for (const paragraph of descendants(
@@ -196,7 +251,7 @@ function parsePptx(bytes) {
       (a, b) =>
         Number(a.match(/slide(\d+)/)[1]) - Number(b.match(/slide(\d+)/)[1]),
     );
-  const blocks = [];
+  const blocks = blockList();
   for (const name of names) {
     const number = Number(name.match(/slide(\d+)/)[1]);
     const text = descendants(xml.parse(decode(entries[name])), "a:p")
@@ -239,9 +294,10 @@ function valueText(value) {
 }
 
 async function parseXlsx(bytes) {
+  officeEntries(bytes, /\.xml$/);
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(bytes);
-  const blocks = [];
+  const blocks = blockList();
   for (const sheet of workbook.worksheets) {
     const rows = [];
     sheet.eachRow({ includeEmpty: false }, (row, number) => {
@@ -281,7 +337,7 @@ function parseCsvFile(bytes, delimiter) {
     delimiter,
     max_record_size: 2 * 1024 * 1024,
   });
-  const blocks = [];
+  const blocks = blockList();
   for (let index = 0; index < rows.length; index += 16) {
     const group = rows.slice(index, index + 16);
     const heading = index ? "表头：" + rows[0].join(" | ") + "\n" : "";
@@ -334,7 +390,7 @@ async function parsePdf(bytes, options) {
     useWorkerFetch: false,
   });
   let worker;
-  const blocks = [];
+  const blocks = blockList();
   let ocr = false;
   try {
     const document = await loading.promise;
@@ -385,7 +441,7 @@ async function parsePdf(bytes, options) {
 export async function parseFile(options) {
   const metadata = await stat(options.path);
   if (metadata.size > maximumBytes)
-    throw new Error("文件超过解析器的 100 MB 上限。");
+    throw new Error("文件超过解析器的 32 MB 安全上限，请拆分后加入。");
   const bytes = await readFile(options.path);
   const extension = extname(options.path).toLowerCase();
   switch (extension) {

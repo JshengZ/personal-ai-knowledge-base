@@ -19,6 +19,8 @@ npm run build:desktop
 cargo build --locked --manifest-path engine/Cargo.toml
 npm test
 npm run test:integration
+npm run test:resilience
+npm run test:desktop
 npm run dev
 ```
 
@@ -87,3 +89,5 @@ node scripts/verify-package.mjs win
 6. 检查仓库公开性和无需登录的下载。不要上传开发数据、备份、日志、签名材料或用户配置。
 
 手动发布工作流可构建新平台包，产物先保留为工作流 artifact 供维护者检查，不自动公开 Release。依赖更新需同步第三方许可；JavaScript 清单可用 `collect-licenses.mjs` 更新，Rust 清单随 Cargo 锁文件维护。
+
+离线打包 Electron 时，可将 `PKB_ELECTRON_DIST` 指向已解压的 Electron，或包含固定版本 `electron-v<version>-<platform>-<arch>.zip` 的本地目录。此选项只使用缓存，不更改固定的 Electron 版本。

@@ -50,17 +50,16 @@ export function QuestionBar({
 }
 
 export function Search() {
-  const { data, projectId, openSource } = useKnowledge();
+  const { data, openSource } = useKnowledge();
   const initial = submittedQuestion;
   const [query, setQuery] = useState(initial?.query || "");
-  const [scope, setScope] = useState(initial?.project || projectId);
+  const [scope, setScope] = useState(initial?.project || "");
   const [extension, setExtension] = useState("");
   const [result, setResult] = useState<SearchResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [lastQuery, setLastQuery] = useState("");
   const [searchOnly, setSearchOnly] = useState(false);
-  useEffect(() => setScope(projectId), [projectId]);
   const run = async (text: string, project: string, only = false) => {
     if (!text.trim()) return;
     setBusy(true);
@@ -106,7 +105,7 @@ export function Search() {
       </header>
       <form onSubmit={submit} className="search-form">
         <div className="question-bar">
-          <MagnifyingGlassIcon size={21} weight="thin" aria-hidden />
+          <MagnifyingGlassIcon size={21} weight="regular" aria-hidden />
           <label className="sr-only" htmlFor="search-question">
             问题或关键词
           </label>
@@ -223,7 +222,7 @@ export function Search() {
                     : "全文检索"}
                 </span>
               </div>
-              {result.hits.map((hit, index) => (
+              {result.hits.map((hit) => (
                 <button
                   className="search-hit"
                   key={hit.chunk_id}

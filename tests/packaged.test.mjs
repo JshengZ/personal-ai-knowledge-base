@@ -34,7 +34,8 @@ test(
     await mkdir(second);
     await writeFile(
       join(first, "排序实验.md"),
-      "# 推荐排序\n使用 LightGBM LambdaRank。NDCG@10 为 0.462。\n",
+      "# 推荐排序\n使用 LightGBM LambdaRank。NDCG@10 为 0.462。\n" +
+        "推荐排序的长文本验证，保留项目背景与原文出处。".repeat(130),
     );
     await writeFile(
       join(second, "订单设计.md"),
@@ -42,14 +43,12 @@ test(
     );
     const pdf = await PDFDocument.create();
     const font = await pdf.embedFont(StandardFonts.Helvetica);
-    pdf
-      .addPage([600, 800])
-      .drawText("PACKAGED PDF CITATION CHECK", {
-        x: 30,
-        y: 700,
-        font,
-        size: 16,
-      });
+    pdf.addPage([600, 800]).drawText("PACKAGED PDF CITATION CHECK", {
+      x: 30,
+      y: 700,
+      font,
+      size: 16,
+    });
     await writeFile(join(second, "包装验证.pdf"), await pdf.save());
     const canvas = createCanvas(1500, 240);
     const context = canvas.getContext("2d");
@@ -71,7 +70,7 @@ test(
     const executablePath =
       process.env.PKB_PACKAGED_APP ||
       (process.platform === "win32"
-        ? resolve("release/win-x64/win-unpacked/个人知识库.exe")
+        ? resolve("release/win-x64/win-unpacked/Personal-Knowledge.exe")
         : resolve(
             "release/mac-" +
               process.arch +
@@ -115,7 +114,8 @@ test(
         const value = await api("GET", "/state");
         return value.documents.length === 5 &&
           value.documents.every((document) => document.status === "ready") &&
-          value.stats.vectors >= 5
+          value.stats.vectors >= value.stats.chunks &&
+          !value.embedding_busy
           ? value
           : false;
       }, "five real documents parsed and embedded");
@@ -146,11 +146,11 @@ test(
       const pages = await api("GET", "/sources/" + source.id);
       assert.equal(pages.chunks[0].location.page, 1);
       await page.getByRole("button", { name: "资料", exact: true }).click();
-      await page.locator("#project-picker").selectOption(project.id);
+      await page.locator("#file-project").selectOption(project.id);
       await until(
         async () =>
           (await page.locator("#file-project").inputValue()) === project.id,
-        "project filter follows workspace",
+        "project filter narrows the document list",
       );
       await page.getByRole("button", { name: /订单设计.md/ }).waitFor();
       assert.equal(
@@ -194,7 +194,7 @@ test(
         "GET",
         "/connections/" + connections.connections[0].id + "/config",
       );
-      client = new Client({ name: "packaged-smoke", version: "1.0.0" });
+      client = new Client({ name: "packaged-smoke", version: "1.0.1" });
       await client.connect(
         new StdioClientTransport({
           command: config.server.command,
@@ -258,7 +258,11 @@ test(
       if (client) await client.close();
       await app.close();
       await until(
-        () => readFile(join(home, "service.json")).then(() => false, () => true),
+        () =>
+          readFile(join(home, "service.json")).then(
+            () => false,
+            () => true,
+          ),
         "app exit must finish shutting down its backend",
         15000,
       );

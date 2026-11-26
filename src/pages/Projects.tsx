@@ -2,9 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import {
   PencilSimpleLineIcon,
   ArrowUpRightIcon,
-  ArrowRightIcon,
   PlusIcon,
-  SparkleIcon,
 } from "@phosphor-icons/react";
 import { useKnowledge } from "../context";
 import { request } from "../api";
@@ -85,7 +83,7 @@ export function Projects() {
           <p>最近更新于 {date(project.updated_at)}</p>
         </div>
         <button className="text-action" onClick={() => setEditing(true)}>
-          <PencilSimpleLineIcon size={18} weight="thin" />
+          <PencilSimpleLineIcon size={18} weight="regular" />
           编辑项目
         </button>
       </header>

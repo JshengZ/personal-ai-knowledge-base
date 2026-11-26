@@ -56,18 +56,6 @@ export function Welcome() {
     await refresh();
     navigate("projects");
   };
-  const sample = async () => {
-    setBusy(true);
-    setError("");
-    try {
-      await request("POST", "/demo", {});
-      await finish();
-    } catch (error) {
-      setError(error instanceof Error ? error.message : "示例资料建立失败");
-    } finally {
-      setBusy(false);
-    }
-  };
   const connect = async () => {
     setBusy(true);
     setError("");
@@ -96,7 +84,7 @@ export function Welcome() {
   return (
     <main className="welcome">
       <div className="welcome-brand">
-        <BookOpenIcon size={25} weight="thin" />
+        <BookOpenIcon size={25} weight="regular" />
         个人知识库
       </div>
       <div className="welcome-content">
@@ -116,6 +104,10 @@ export function Welcome() {
               中使用，新增资料会在后台自动整理。
             </p>
             <label className="welcome-directory">
+              <span className="muted storage-location-summary">
+                知识库存储位置：{data.data_directory.replace(/^\\\\\?\\/, "")}
+                。以后可在设置中迁移；先添加具体的项目或文档目录。
+              </span>
               选择一个资料目录
               <div className="input-action">
                 <input
@@ -153,13 +145,6 @@ export function Welcome() {
                     <ArrowRightIcon size={17} />
                   </>
                 )}
-              </button>
-              <button
-                className="text-action"
-                disabled={busy}
-                onClick={() => void sample()}
-              >
-                用示例资料体验
               </button>
             </div>
           </>

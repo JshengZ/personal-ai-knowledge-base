@@ -22,6 +22,8 @@ npm run build:desktop
 cargo build --locked --manifest-path engine/Cargo.toml
 npm test
 npm run test:integration
+npm run test:resilience
+npm run test:desktop
 npm run dev
 ```
 
@@ -97,3 +99,5 @@ For organization-specific installers, set `PKB_COMPANY_CONFIG` to a JSON templat
 The release workflow is manually dispatched, builds fresh platform packages, and stores workflow artifacts for maintainer review. Public release publication remains a deliberate step. GitHub automatically provides source archives for the tag; large installers belong in Releases, not Git history.
 
 Update third-party notices when dependencies change. `node scripts/collect-licenses.mjs` refreshes JavaScript records, including bundled UI dependencies; Rust license records must be updated alongside lockfile changes. Use only properly licensed contributions and preserve upstream notices.
+
+For an offline Electron packaging step, set `PKB_ELECTRON_DIST` to an unpacked Electron distribution or a directory containing the exact pinned `electron-v<version>-<platform>-<arch>.zip`. This uses a local runtime cache; it does not change the pinned Electron version.

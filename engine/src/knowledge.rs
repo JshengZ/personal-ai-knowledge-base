@@ -171,12 +171,15 @@ pub async fn summarize(state: &Arc<AppState>, project_id: &str) -> Result<Projec
 pub async fn run_summaries(state: Arc<AppState>) {
     let mut attempted = std::collections::HashMap::<String, std::time::Instant>::new();
     loop {
-        tokio::time::sleep(Duration::from_secs(20)).await;
+        tokio::select! { _=tokio::time::sleep(Duration::from_secs(20))=>{}, _=state.shutdown.cancelled()=>{} }
         if state.stopping.load(Ordering::SeqCst) {
             break;
         }
         let settings = state.store.settings().unwrap_or_default();
-        if settings.paused || !settings.auto_summarize || settings.chat.base_url.is_empty() {
+        if !state.indexing_allowed()
+            || !settings.auto_summarize
+            || settings.chat.base_url.is_empty()
+        {
             continue;
         }
         for project in state.store.projects().unwrap_or_default() {

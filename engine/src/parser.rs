@@ -1,7 +1,12 @@
 use crate::types::{ParsedFile, RuntimeConfig, Settings};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
-use std::{path::Path, process::Stdio, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout},
@@ -17,13 +22,19 @@ struct Worker {
 pub struct ParserService {
     runtime: RuntimeConfig,
     worker: Mutex<Option<Worker>>,
+    temporary: PathBuf,
+    cancelled: AtomicBool,
+    cancel: tokio::sync::Notify,
 }
 
 impl ParserService {
-    pub fn new(runtime: RuntimeConfig) -> Self {
+    pub fn new(runtime: RuntimeConfig, temporary: PathBuf) -> Self {
         Self {
             runtime,
             worker: Mutex::new(None),
+            temporary,
+            cancelled: AtomicBool::new(false),
+            cancel: tokio::sync::Notify::new(),
         }
     }
 
@@ -33,8 +44,13 @@ impl ParserService {
         }
         let mut command = tokio::process::Command::new(&self.runtime.parser_runtime);
         command
+            .arg("--max-old-space-size=512")
             .arg(&self.runtime.parser_script)
             .arg("--server")
+            .current_dir(&self.temporary)
+            .env("TMPDIR", &self.temporary)
+            .env("TEMP", &self.temporary)
+            .env("TMP", &self.temporary)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -43,8 +59,9 @@ impl ParserService {
             command.env("ELECTRON_RUN_AS_NODE", "1");
         }
         #[cfg(windows)]
-        command.creation_flags(0x08000000);
+        command.creation_flags(0x08004000);
         let mut child = command.spawn().context("无法启动文件解析程序")?;
+        crate::processes::track(child.id().context("解析进程编号不可用")?)?;
         let input = child.stdin.take().context("解析器输入不可用")?;
         let output = BufReader::new(child.stdout.take().context("解析器输出不可用")?);
         Ok(Worker {
@@ -55,6 +72,9 @@ impl ParserService {
     }
 
     pub async fn parse(&self, path: &Path, settings: &Settings) -> Result<ParsedFile> {
+        if self.cancelled.load(Ordering::SeqCst) {
+            bail!("文件解析已停止");
+        }
         let mut worker = self.worker.lock().await;
         let alive = worker
             .as_mut()
@@ -64,7 +84,7 @@ impl ParserService {
         }
         let active = worker.as_mut().unwrap();
         let input=json!({"path":path,"resources":self.runtime.resources,"ocr_enabled":settings.ocr_enabled}).to_string()+"\n";
-        let response = tokio::time::timeout(Duration::from_secs(600), async {
+        let parsing = tokio::time::timeout(Duration::from_secs(600), async {
             active.input.write_all(input.as_bytes()).await?;
             active.input.flush().await?;
             let mut line = String::new();
@@ -77,8 +97,17 @@ impl ParserService {
             let result: Value =
                 serde_json::from_str(&line).context("文件解析程序未返回有效结果")?;
             Ok::<_, anyhow::Error>(result)
-        })
-        .await;
+        });
+        if self.cancelled.load(Ordering::SeqCst) {
+            bail!("文件解析已停止");
+        }
+        let response = tokio::select! {
+            response=parsing=>response,
+            _=self.cancel.notified()=>{
+                if let Some(mut old)=worker.take(){let _=old.child.kill().await;}
+                bail!("文件解析已取消");
+            }
+        };
         let value = match response {
             Ok(Ok(value)) => value,
             result => {
@@ -98,8 +127,13 @@ impl ParserService {
     }
 
     pub async fn stop(&self) {
+        self.request_stop();
         if let Some(mut worker) = self.worker.lock().await.take() {
             let _ = worker.child.kill().await;
         }
+    }
+    pub fn request_stop(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.cancel.notify_waiters();
     }
 }

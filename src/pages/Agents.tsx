@@ -49,7 +49,7 @@ export function Agents() {
           {data.connections.map((connection) => (
             <section className="connection-row" key={connection.id}>
               <div className="connection-heading">
-                <PlugIcon size={31} weight="thin" />
+                <PlugIcon size={31} weight="regular" />
                 <div>
                   <h2>{connection.name}</h2>
                   <p className="muted">

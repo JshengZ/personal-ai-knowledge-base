@@ -81,3 +81,13 @@ The official Rust MCP SDK exposes tool JSON Schemas. Future optional fields shou
 - **Migrations:** advance SQLite `user_version` with migration and restore checks. Newer unsupported schemas are rejected; backups have a separate format version.
 
 This is a modular codebase, not a runtime plugin marketplace. Public source and generic installers are distributed through GitHub; user knowledge, credentials, and organization-specific configurations remain outside the release process.
+
+## Storage and scheduling in 1.0.1
+
+The Electron bootstrap directory contains a location pointer and instance lock. A selected data home contains SQLite/WAL, worker temporary files, browser session data, logs and backups. Offline migration holds the source service lock, copies a consistent SQLite snapshot, preserves the credential namespace and connection tokens, checks integrity and installs a redirect. Cleanup runs only after the target service starts. Source files and unrecognized files are preserved.
+
+MCP stdio initialization/tool discovery is independent of backend readiness. HTTP protocol handshakes authenticate from a refreshed in-memory client cache and use the bound port without waiting for the database writer. Data operations use bounded blocking workers; query connections have time budgets. CPU tokenization occurs before the write transaction. Embedding jobs seek bounded rowid windows and use monotonic chunk rowids, avoiding repeated scans from the beginning.
+
+Incremental SQLite counters track documents, chunks, current-model vectors, queue entries and document status. A legacy library gets a background, snapshot-consistent counter backfill. Progress is not recomputed by scanning every chunk during each UI poll. Local auto-mode budgets do not restrict organization Embedding APIs, and explicit local mode retains the CPU model. Windows child workers belong to an engine-owned kill-on-close Job Object; graceful shutdown cancels parsing/model startup, and the desktop waits for service exit before releasing its own files.
+
+Additional modules: `storage.rs` (capacity/migration), `progress.rs` (local-work policy and measured estimates), `counters.rs` (incremental statistics), `processes.rs` (worker lifecycle), `logging.rs` (two-file rolling log). Parsing remains an adapter boundary; adding a heavier optional parser requires platform packaging, licensing and extraction-quality acceptance.
