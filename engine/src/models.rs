@@ -401,6 +401,9 @@ impl Models {
             let response = self
                 .client
                 .post(format!("http://127.0.0.1:{port}/v1/embeddings"))
+                // A baseline office CPU can need over two minutes for one
+                // bounded document chunk. Queries retain their outer deadline.
+                .timeout(Duration::from_secs(if query { 120 } else { 300 }))
                 .json(&json!({"model":"Qwen3-Embedding-0.6B","input":inputs}))
                 .send()
                 .await?;

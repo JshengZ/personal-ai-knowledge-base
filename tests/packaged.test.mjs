@@ -23,7 +23,7 @@ async function until(callback, label, timeout = 90000) {
 
 test(
   "installed app: native setup, all bundled parsers, local RAG, project filters and MCP",
-  { timeout: 360000 },
+  { timeout: 480000 },
   async () => {
     const fixture = await mkdtemp(join(tmpdir(), "pkb-installed-"));
     const home = join(fixture, "data");
@@ -151,7 +151,7 @@ test(
               : false;
           },
           "five real documents parsed and embedded",
-          process.platform === "win32" ? 240000 : 90000,
+          process.platform === "win32" ? 360000 : 90000,
         );
       } catch (error) {
         console.error(

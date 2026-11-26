@@ -66,6 +66,10 @@ test('slow embedding work leaves stdio, HTTP initialize, health and FTS responsi
     assert.ok((await readFile(join(home,'service.log'),'utf8')).length>0,'service log is written from startup');
     context.diagnostic('All busy-state protocol operations and FTS fallback completed in '+(Date.now()-begin)+' ms with one Tokio worker');
     for(const item of clients)await item.close();clients.length=0;
+    await service.api('PATCH','/settings',{paused:true});
+    await until(async()=>!(await service.api('GET','/state')).embedding_busy,'pause cancels a held background embedding request',2500);
+    assert.equal((await service.api('GET','/state')).stats.vectors,0,'cancelled work is not committed');
+    await service.api('PATCH','/settings',{paused:false});
     hold=false;for(const done of waiting)done();await until(async()=>{const value=await service.api('GET','/state');return value.stats.vectors===1&&!value.embedding_busy;},'embedding completes');
     await service.api('POST','/shutdown',{});await stopped(service.child);
     await mkdir(join(home,'browser'));await writeFile(join(home,'browser/cache'),'old cache');

@@ -69,7 +69,7 @@ Auto mode keeps the bundled CPU model. Without an Embedding API, it defers backg
 
 **索引资源占用** offers Low (one model thread), Balanced (up to two) and Performance (up to six, leaving CPU headroom). Parser/model workers use below-normal priority on Windows. The parser heap is limited to 512 MiB; this is a V8 heap setting, not a total application RAM limit. Text overlap is bounded, and short Word paragraphs are grouped with paragraph-range citations.
 
-The bundled CPU worker submits one chunk at a time, so a slow batch does not discard already completed chunks. Department APIs continue to use the configured batch size.
+The bundled CPU worker submits one chunk at a time, so a slow batch does not discard already completed chunks. Its background request allows up to five minutes for a bounded chunk on older CPUs. Pausing or changing retrieval mode cancels active background work. MCP queries retain their short full-text fallback deadline. Department APIs continue to use the configured batch size and API timeout.
 
 ## Connect an agent
 

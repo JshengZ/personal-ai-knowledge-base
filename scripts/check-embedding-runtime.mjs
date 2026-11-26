@@ -85,7 +85,7 @@ try {
     ["short", "本地语义检索验证"],
     [
       "bounded-long",
-      "推荐排序的长文本验证，保留项目背景与原文出处。".repeat(85),
+      "推荐排序的长文本验证，保留项目背景与原文出处。".repeat(104),
     ],
   ]) {
     const started = Date.now();
@@ -93,7 +93,7 @@ try {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: "Qwen3-Embedding-0.6B", input: [text] }),
-      signal: AbortSignal.timeout(120000),
+      signal: AbortSignal.timeout(240000),
     });
     const value = await response.json();
     assert.equal(response.ok, true, JSON.stringify(value));

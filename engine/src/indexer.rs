@@ -810,7 +810,32 @@ async fn run_embeddings(state: Arc<AppState>) {
             .map(|chunk| chunk.text.clone())
             .collect::<Vec<_>>();
         let started = std::time::Instant::now();
-        match state.models.embed(&settings, &texts, false).await {
+        let mut calculation = Box::pin(state.models.embed(&settings, &texts, false));
+        let result = loop {
+            tokio::select! {
+                result = &mut calculation => break Some(result),
+                _ = state.shutdown.cancelled() => break None,
+                _ = tokio::time::sleep(Duration::from_millis(500)) => {
+                    let current = state.store.settings().unwrap_or_default();
+                    if current.paused || !state.indexing_allowed()
+                        || current.embedding_mode != settings.embedding_mode
+                        || current.indexing_profile != settings.indexing_profile
+                        || state.models.embedding_model(&current) != model {
+                        break None;
+                    }
+                }
+            }
+        };
+        // Drop the startup/request future before taking the model mutex.
+        drop(calculation);
+        let Some(result) = result else {
+            if !Models::remote_embeddings(&settings) {
+                state.models.unload_local().await;
+            }
+            state.embedding_busy.store(false, Ordering::SeqCst);
+            continue;
+        };
+        match result {
             Ok(vectors) => {
                 let current = state.store.settings().unwrap_or_default();
                 let mut saved = !current.paused && state.models.embedding_model(&current) == model;

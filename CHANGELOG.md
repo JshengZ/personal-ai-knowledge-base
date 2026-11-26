@@ -20,6 +20,7 @@
 - Journal interrupted migrations, reuse verified copies on explicit retry, preserve unknown/changed copies, and keep a normal quit from interrupting migration.
 - Build metadata distinguishes unpublished working-tree packages from artifacts built from an exact source commit.
 - Normalize Windows archive paths in package audits; use packaged executables directly in GUI checks. Verify short and long model inputs before packaging, preserve MSVC exception/path-remapping options, and commit local CPU vectors one chunk at a time while retaining API batching.
+- Give background local CPU chunks an independent five-minute request limit, with cancellation on pause, provider/profile changes and shutdown; interactive fallback and department API deadlines stay bounded separately.
 
 - 展开选单、选中及键盘焦点使用统一主题；规范按钮高度、间距与弹窗操作区；长名称省略显示并在菜单内保留全文；移除装饰性文案。
 - 设置按分组保存，保留其他分组的模型与凭据草稿。
@@ -27,6 +28,7 @@
 - 容量统计区分可复用页；禁止新增索引时仍以持久化小批任务清理已移除资料。本地模型在查询取消后继续预热，更换 API 路径隔离旧向量。
 - 迁移增加作业记录，明确重试可复用完整副本；保留未知或已变化副本，正常退出等待迁移结束。
 - 构建记录区分未发布工作区安装包和来自确定源码提交的安装包。
+- 后台 CPU 向量计算使用独立的五分钟片段请求上限，暂停、更换模型／占用档位及退出可取消；交互检索与部门 API 保留各自时限。
 - 包审计统一 Windows 路径，界面测试直接使用打包程序；打包前验证短／长文本向量，保留 MSVC 异常及路径重映射选项；本地 CPU 逐片段保存向量，API 批量处理保留。
 
 ### English

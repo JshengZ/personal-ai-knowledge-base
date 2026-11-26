@@ -27,7 +27,7 @@ Additional cases cover local auto budgets, continued department-API/explicit-CPU
 
 The [source CI matrix](https://github.com/JshengZ/personal-ai-knowledge-base/actions/workflows/ci.yml) tests native Windows and macOS, including guide replay and desktop migration. The [installer workflow](https://github.com/JshengZ/personal-ai-knowledge-base/actions/workflows/build-installers.yml) also tests the packaged apps. Use the exact successful run and source commit recorded with the release; a configured job alone is not a passing result. Package and source checks are separate from acceptance on a company workstation. No real company API credentials or documents are used.
 
-The Windows packaged smoke test allows up to four minutes for its CPU embedding fixture and logs progress every fifteen seconds, with source-status and service-log diagnostics on failure. It still requires complete vector coverage and actual hybrid MCP retrieval; a timeout does not count as a pass.
+The Windows packaged smoke test allows up to six minutes for its CPU embedding fixture and logs progress every fifteen seconds, with source-status and service-log diagnostics on failure. It still requires complete vector coverage and actual hybrid MCP retrieval; a timeout does not count as a pass. A baseline Windows CPU took about 113 seconds for a 1,955-character fixture, exposing the former 120-second timeout on longer chunks. Background local calls now allow five minutes per chunk and observe pause, provider/profile changes and shutdown. Department API and interactive retrieval deadlines remain separate.
 
 ## Historical 1.0.0 checks
 
