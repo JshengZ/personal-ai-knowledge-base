@@ -203,12 +203,23 @@ test(
       await page.locator("#file-project").selectOption(project.id);
       await until(
         async () =>
-          (await page.locator("#file-project").inputValue()) === project.id,
+          (await page.locator("#file-project").inputValue()) === project.id &&
+          (await page.locator(".file-table-row .file-name").count()) === 4 &&
+          (await page
+            .locator(".file-name")
+            .filter({ hasText: "排序实验.md" })
+            .count()) === 0,
         "project filter narrows the document list",
       );
-      await page.getByRole("button", { name: /订单设计.md/ }).waitFor();
+      await page
+        .locator("button.file-name")
+        .filter({ hasText: "订单设计.md" })
+        .waitFor();
       assert.equal(
-        await page.getByRole("button", { name: /排序实验.md/ }).count(),
+        await page
+          .locator("button.file-name")
+          .filter({ hasText: "排序实验.md" })
+          .count(),
         0,
       );
       await page.getByRole("button", { name: "关于我", exact: true }).click();
@@ -225,11 +236,17 @@ test(
         .getByRole("button", { name: "Agent 连接", exact: true })
         .click();
       await page.getByRole("button", { name: "添加连接", exact: true }).click();
-      await dialog.getByRole("combobox").selectOption("other");
+      await dialog.getByLabel("客户端", { exact: true }).selectOption("other");
       await dialog
         .getByLabel("连接名称", { exact: true })
         .fill("安装包验收 Agent");
+      await dialog
+        .getByLabel("共享范围", { exact: true })
+        .selectOption("selected");
       await dialog.getByLabel("推荐排序", { exact: true }).uncheck();
+      assert.ok(
+        await dialog.getByLabel("订单校验", { exact: true }).isChecked(),
+      );
       await dialog.getByLabel("共享已确认的个人记忆").check();
       await dialog.getByLabel("允许 Agent 提交记忆建议，等待我确认").check();
       await dialog
