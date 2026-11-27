@@ -23,7 +23,8 @@ export const guideSteps: readonly GuideStep[] = [
     title: "添加资料目录",
     description:
       "选择需要索引的项目或文档文件夹。以后新增、修改和删除文件，索引会自动更新。",
-    detail: "先添加具体目录；可在“资料目录”中设置访问权限和排除规则。",
+    detail:
+      "可一次选择多个目录、分别命名；在“资料目录”中调整访问权限和排除规则。",
   },
   {
     id: "progress",
@@ -54,8 +55,8 @@ export const guideSteps: readonly GuideStep[] = [
     location: "Agent 连接",
     title: "通过 MCP 接入 Agent",
     description:
-      "添加连接，选择允许读取的项目。ZCode 可一键配置，其他 MCP 客户端可复制接入配置。",
-    detail: "配置后在客户端新建会话。共享个人记忆和提交建议的权限可分别设置。",
+      "添加连接后，默认共享全部允许 Agent 使用的资料，后续新增自动纳入。ZCode 可一键配置。",
+    detail: "也可指定项目范围。共享个人记忆和提交建议的权限分别设置。",
   },
   {
     id: "search",
@@ -64,7 +65,7 @@ export const guideSteps: readonly GuideStep[] = [
     location: "搜索与问答",
     title: "检索资料与核对来源",
     description:
-      "输入关键词或问题，按项目和文件类型筛选。点击检索结果或回答中的引用，可以查看原文位置。",
+      "输入关键词或问题，按资料集合、项目和文件类型筛选。点击检索结果或回答中的引用，可以查看原文位置。",
     detail: "尚未配置对话模型时，仍可搜索原文。",
   },
   {
@@ -74,7 +75,7 @@ export const guideSteps: readonly GuideStep[] = [
     location: "项目",
     title: "按项目查看资料",
     description:
-      "添加资料后，程序会识别代码项目和资料集合。这里可维护项目目标、当前方案与关键决策。",
+      "添加资料后，每个目录保留自定义名称，其内部代码项目单独识别。这里可维护项目目标、当前方案与关键决策。",
     detail: "项目摘要可手动填写，也可使用已配置的对话模型生成。",
   },
   {

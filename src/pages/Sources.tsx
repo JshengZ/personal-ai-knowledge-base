@@ -1,4 +1,10 @@
-import { useDeferredValue, useEffect, useState, type FormEvent } from "react";
+import {
+  useDeferredValue,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 import {
   PlusIcon,
   ArrowsClockwiseIcon,
@@ -12,6 +18,16 @@ import { request } from "../api";
 import { useKnowledge } from "../context";
 import type { Document, Root } from "../types";
 import { Select, Empty, FileIcon, Modal, date } from "../components/ui";
+import { DirectoryBatchDialog } from "../components/DirectoryBatchDialog";
+import {
+  IndexFilterEditor,
+  defaultIndexFilters,
+} from "../components/IndexFilterEditor";
+import {
+  ScopePicker,
+  scopeParameters,
+  validScope,
+} from "../components/ScopePicker";
 import { IndexProgress } from "../components/IndexProgress";
 
 const statusNames: Record<string, string> = {
@@ -45,6 +61,10 @@ export function Sources() {
   const [query, setQuery] = useState("");
   const deferred = useDeferredValue(query);
   const [scope, setScope] = useState("");
+  const effectiveScope = validScope(scope, data) ? scope : "";
+  const generation = useRef(0);
+  const [excluding, setExcluding] = useState<Document | null>(null);
+  const [excludeScope, setExcludeScope] = useState("file");
   const [status, setStatus] = useState("");
   const [documents, setDocuments] = useState<Document[]>([]);
   const [total, setTotal] = useState(0);
@@ -57,13 +77,16 @@ export function Sources() {
       offset: String(offset),
       limit: "100",
     });
-    if (scope) parameters.set("project_id", scope);
+    for (const [key, value] of Object.entries(scopeParameters(effectiveScope)))
+      parameters.set(key, value);
     if (deferred) parameters.set("query", deferred);
     if (status) parameters.set("status", status);
+    const current = generation.current;
     const result = await request<{ documents: Document[]; total: number }>(
       "GET",
       "/documents?" + parameters,
     );
+    if (current !== generation.current) return;
     setDocuments((previous) =>
       offset ? [...previous, ...result.documents] : result.documents,
     );
@@ -71,9 +94,10 @@ export function Sources() {
   };
   useEffect(() => {
     let current = true;
+    generation.current++;
     const parameters = new URLSearchParams({
       limit: "100",
-      ...(scope ? { project_id: scope } : {}),
+      ...scopeParameters(effectiveScope),
       ...(deferred ? { query: deferred } : {}),
       ...(status ? { status } : {}),
     });
@@ -95,8 +119,11 @@ export function Sources() {
       current = false;
     };
   }, [
-    scope,
+    effectiveScope,
     deferred,
+    data.library_revision,
+    data.stats.cleaning,
+    data.stats.documents,
     status,
     data.last_indexed,
     data.last_scan,
@@ -205,20 +232,15 @@ export function Sources() {
               onChange={(event) => setQuery(event.target.value)}
             />
             <label className="sr-only" htmlFor="file-project">
-              项目范围
+              资料范围
             </label>
-            <Select
+            <ScopePicker
+              data={data}
               id="file-project"
-              value={scope}
+              value={effectiveScope}
               onChange={(event) => setScope(event.target.value)}
-            >
-              <option value="">全部项目</option>
-              {data.projects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name}
-                </option>
-              ))}
-            </Select>
+            />
+
             <label className="sr-only" htmlFor="file-status">
               索引状态
             </label>
@@ -306,7 +328,20 @@ export function Sources() {
                       </details>
                     )}
                   </div>
-                  <time>{date(document.updated_at)}</time>
+                  <div className="file-row-actions">
+                    <time>{date(document.updated_at)}</time>
+                    <button
+                      type="button"
+                      className="text-action"
+                      aria-label={`排除索引 ${document.title}`}
+                      onClick={() => {
+                        setExcluding(document);
+                        setExcludeScope("file");
+                      }}
+                    >
+                      排除
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -361,6 +396,40 @@ export function Sources() {
                   </span>
                 </p>
                 {root.error && <p className="notice error">{root.error}</p>}
+                {data.scan_summaries?.find((item) => item.root_id === root.id)
+                  ?.summary &&
+                  (() => {
+                    const summary = data.scan_summaries!.find(
+                      (item) => item.root_id === root.id,
+                    )!.summary!;
+                    return (
+                      <details className="scan-summary">
+                        <summary>
+                          可索引 {summary.eligible_files} 份 · 已跳过{" "}
+                          {summary.skipped_files} 个文件、
+                          {summary.skipped_directories} 个目录
+                        </summary>
+                        <p className="muted">
+                          被跳过目录的内部文件未逐个统计。原始文件保留。
+                        </p>
+                        <dl>
+                          {Object.entries(summary.reasons).map(
+                            ([reason, count]) => (
+                              <div key={reason}>
+                                <dt>{reason}</dt>
+                                <dd>{count}</dd>
+                              </div>
+                            ),
+                          )}
+                        </dl>
+                        {summary.examples.map((item, index) => (
+                          <p className="path-text" key={index}>
+                            {item.path || "此目录"} · {item.reason}
+                          </p>
+                        ))}
+                      </details>
+                    );
+                  })()}
                 <div className="actions">
                   <button
                     className="text-action"
@@ -405,6 +474,40 @@ export function Sources() {
           )}
         </div>
       )}
+      {excluding && (
+        <Modal
+          title="排除索引"
+          onClose={() => setExcluding(null)}
+          onSubmit={(event) => {
+            event.preventDefault();
+            void action(async () => {
+              await request("POST", "/sources/" + excluding.id + "/exclude", {
+                scope: excludeScope,
+              });
+              setExcluding(null);
+            }, "排除规则已保存，正在回收索引。");
+          }}
+          submitLabel="排除索引"
+          busy={busy}
+        >
+          <p>{excluding.title}</p>
+          <label>
+            排除范围
+            <Select
+              aria-label="排除范围"
+              value={excludeScope}
+              onChange={(event) => setExcludeScope(event.target.value)}
+            >
+              <option value="file">仅此文件</option>
+              <option value="directory">所在目录及其子目录</option>
+              <option value="extension">此集合内的同类文件</option>
+            </Select>
+          </label>
+          <p className="muted">
+            后续新增文件会遵守此规则。原始文件保留，可在管理目录中恢复纳入。
+          </p>
+        </Modal>
+      )}
       {editing && (
         <RootDialog root={editing} onClose={() => setEditing(null)} />
       )}
@@ -433,7 +536,7 @@ export function Sources() {
   );
 }
 
-export function RootDialog({
+function EditRootDialog({
   root,
   onClose,
 }: {
@@ -444,6 +547,7 @@ export function RootDialog({
   const [path, setPath] = useState(root?.path || "");
   const [name, setName] = useState(root?.name || "");
   const [policy, setPolicy] = useState(root?.policy || "agents");
+  const [filters, setFilters] = useState(root?.filters || defaultIndexFilters);
   const [exclusions, setExclusions] = useState(
     (root?.exclusions || ["**/dist/**", "**/*.min.js", "**/.env*"]).join("\n"),
   );
@@ -469,6 +573,7 @@ export function RootDialog({
           path,
           name,
           policy,
+          filters,
           exclusions: exclusions
             .split("\n")
             .map((value) => value.trim())
@@ -487,6 +592,7 @@ export function RootDialog({
   return (
     <Modal
       title={root ? "管理资料目录" : "添加资料目录"}
+      className="scrollable-form"
       onClose={onClose}
       onSubmit={submit}
       busy={busy}
@@ -532,25 +638,32 @@ export function RootDialog({
           <option value="local">仅本机检索和阅读</option>
         </Select>
       </label>
-      <details className="advanced">
-        <summary>排除规则</summary>
-        <label>
-          每行一条规则
-          <textarea
-            rows={4}
-            value={exclusions}
-            onChange={(event) => setExclusions(event.target.value)}
-          />
-          <small>
-            支持 **/*.tmp 这样的文件路径匹配。依赖缓存、Git 内部数据会自动跳过。
-          </small>
-        </label>
-      </details>
+      <IndexFilterEditor
+        value={filters}
+        exclusions={exclusions}
+        onChange={setFilters}
+        onExclusions={setExclusions}
+      />
+
       {error && (
         <p className="form-error" role="alert">
           {error}
         </p>
       )}
     </Modal>
+  );
+}
+
+export function RootDialog({
+  root,
+  onClose,
+}: {
+  root?: Root;
+  onClose: () => void;
+}) {
+  return root ? (
+    <EditRootDialog root={root} onClose={onClose} />
+  ) : (
+    <DirectoryBatchDialog onClose={onClose} />
   );
 }

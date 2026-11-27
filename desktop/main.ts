@@ -522,6 +522,14 @@ async function start() {
       nativeTheme.shouldUseDarkColors ? "#171719" : "#ffffff",
     );
   });
+  ipcMain.handle("knowledge:choose-directories", async (event) => {
+    assertSender(event);
+    const result = await dialog.showOpenDialog(window!, {
+      title: "选择资料目录（可多选）",
+      properties: ["openDirectory", "multiSelections"],
+    });
+    return result.canceled ? [] : result.filePaths;
+  });
   ipcMain.handle("knowledge:choose-directory", async (event) => {
     assertSender(event);
     const result = await dialog.showOpenDialog(window!, {

@@ -62,34 +62,46 @@ export function App() {
     null,
   );
   const notificationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const refreshing = useRef(false);
-  const refresh = useCallback(async () => {
-    if (refreshing.current) return;
-    refreshing.current = true;
-    try {
-      const value = await request<Snapshot>("GET", "/state");
-      setData(value);
-      setConnectionError("");
-      setProjectId((current) =>
-        value.projects.some((project) => project.id === current)
-          ? current
-          : value.projects[0]?.id || "",
-      );
-    } catch (error) {
-      setConnectionError(
-        error instanceof Error ? error.message : "本地服务连接失败",
-      );
-    } finally {
-      refreshing.current = false;
-    }
+  const refreshing = useRef<Promise<void> | null>(null);
+  const refreshAgain = useRef(false);
+  const refresh = useCallback(() => {
+    refreshAgain.current = true;
+    if (refreshing.current) return refreshing.current;
+    const task = (async () => {
+      do {
+        refreshAgain.current = false;
+        try {
+          const value = await request<Snapshot>("GET", "/state");
+          setData(value);
+          setConnectionError("");
+          setProjectId((current) =>
+            value.projects.some((project) => project.id === current)
+              ? current
+              : value.projects[0]?.id || "",
+          );
+        } catch (error) {
+          setConnectionError(
+            error instanceof Error ? error.message : "本地服务连接失败",
+          );
+        }
+      } while (refreshAgain.current);
+    })().finally(() => {
+      refreshing.current = null;
+    });
+    refreshing.current = task;
+    return task;
   }, []);
+  useEffect(() => {
+    setSource(null);
+  }, [data?.library_revision]);
+
   useEffect(() => {
     void refresh();
     const timer = setInterval(() => {
-      if (!document.hidden) void refresh();
+      if (!document.hidden && !refreshing.current) void refresh();
     }, 2500);
     const visible = () => {
-      if (!document.hidden) void refresh();
+      if (!document.hidden && !refreshing.current) void refresh();
     };
     document.addEventListener("visibilitychange", visible);
     return () => {

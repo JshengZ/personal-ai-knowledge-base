@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld("knowledge", {
   initialAppearance,
   request: (method: string, path: string, body?: unknown) =>
     ipcRenderer.invoke("knowledge:request", method, path, body),
+  chooseDirectories: () => ipcRenderer.invoke("knowledge:choose-directories"),
   chooseDirectory: () => ipcRenderer.invoke("knowledge:choose-directory"),
   openSource: (id: string) => ipcRenderer.invoke("knowledge:open-source", id),
   revealData: () => ipcRenderer.invoke("knowledge:reveal-data"),

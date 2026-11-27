@@ -104,6 +104,7 @@ export function Modal({
   onSubmit,
   submitLabel = "保存",
   busy = false,
+  submitDisabled = false,
   wide = false,
   cancelLabel = "取消",
   className = "",
@@ -115,6 +116,7 @@ export function Modal({
   onSubmit?: (event: FormEvent) => void;
   submitLabel?: string;
   busy?: boolean;
+  submitDisabled?: boolean;
   wide?: boolean;
   cancelLabel?: string;
   className?: string;
@@ -161,7 +163,11 @@ export function Modal({
           <button type="button" onClick={onClose} disabled={busy}>
             {cancelLabel}
           </button>
-          <button className="primary" type="submit" disabled={busy}>
+          <button
+            className="primary"
+            type="submit"
+            disabled={busy || submitDisabled}
+          >
             {busy ? <Busy /> : submitLabel}
           </button>
         </div>

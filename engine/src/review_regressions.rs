@@ -23,6 +23,7 @@ pub(crate) fn fixture(
         policy: "agents".into(),
         enabled: true,
         exclusions: vec![],
+        filters: Default::default(),
         created_at: timestamp(),
         last_scan: None,
         error: None,

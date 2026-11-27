@@ -82,14 +82,16 @@ export function Agents() {
               <div className="connection-scope">
                 <p>共享项目</p>
                 <span>
-                  {connection.project_ids
-                    .map(
-                      (id) =>
-                        data.projects.find((project) => project.id === id)
-                          ?.name,
-                    )
-                    .filter(Boolean)
-                    .join("、") || "尚未选择项目"}
+                  {connection.scope_mode === "all"
+                    ? "全部可共享资料 · 后续新增自动纳入"
+                    : connection.project_ids
+                        .map(
+                          (id) =>
+                            data.projects.find((project) => project.id === id)
+                              ?.name,
+                        )
+                        .filter(Boolean)
+                        .join("、") || "尚未选择项目"}
                 </span>
                 <p>个人记忆</p>
                 <span>
@@ -217,6 +219,9 @@ export function ConnectionEditor({
   const { data, refresh, notify } = useKnowledge();
   const [name, setName] = useState(connection?.name || "ZCode");
   const [kind, setKind] = useState(connection?.kind || "zcode");
+  const [scopeMode, setScopeMode] = useState<"all" | "selected">(
+    connection?.scope_mode || (connection ? "selected" : "all"),
+  );
   const [projects, setProjects] = useState(
     connection?.project_ids || data.projects.map((project) => project.id),
   );
@@ -235,7 +240,13 @@ export function ConnectionEditor({
         {
           name,
           kind,
-          project_ids: projects,
+          project_ids:
+            scopeMode === "all"
+              ? []
+              : projects.filter((id) =>
+                  data.projects.some((project) => project.id === id),
+                ),
+          scope_mode: scopeMode,
           include_profile: profile,
           can_propose: propose,
         },
@@ -296,29 +307,50 @@ export function ConnectionEditor({
           </Select>
         </label>
       )}
-      <fieldset>
-        <legend>允许读取的项目</legend>
-        {data.projects.length ? (
-          data.projects.map((project) => (
-            <label className="checkbox-label" key={project.id}>
-              <input
-                type="checkbox"
-                checked={projects.includes(project.id)}
-                onChange={(event) =>
-                  setProjects((previous) =>
-                    event.target.checked
-                      ? [...previous, project.id]
-                      : previous.filter((id) => id !== project.id),
-                  )
-                }
-              />
-              {project.name}
-            </label>
-          ))
-        ) : (
-          <p className="muted">添加资料目录后，可以回来选择项目。</p>
-        )}
-      </fieldset>
+      <label>
+        共享范围
+        <Select
+          aria-label="共享范围"
+          value={scopeMode}
+          onChange={(event) =>
+            setScopeMode(event.target.value as "all" | "selected")
+          }
+        >
+          <option value="all">自动共享（含后续新增资料）</option>
+          <option value="selected">仅指定项目</option>
+        </Select>
+      </label>
+      {scopeMode === "all" && (
+        <p className="muted">
+          自动读取允许 Agent
+          使用的资料集合，新文件与新项目会自动纳入。仅本机或仅窗口使用的资料继续按原设置处理。
+        </p>
+      )}
+      {scopeMode === "selected" && (
+        <fieldset>
+          <legend>允许读取的项目</legend>
+          {data.projects.length ? (
+            data.projects.map((project) => (
+              <label className="checkbox-label" key={project.id}>
+                <input
+                  type="checkbox"
+                  checked={projects.includes(project.id)}
+                  onChange={(event) =>
+                    setProjects((previous) =>
+                      event.target.checked
+                        ? [...previous, project.id]
+                        : previous.filter((id) => id !== project.id),
+                    )
+                  }
+                />
+                {project.name}
+              </label>
+            ))
+          ) : (
+            <p className="muted">添加资料目录后，可以回来选择项目。</p>
+          )}
+        </fieldset>
+      )}
       <label className="checkbox-label">
         <input
           type="checkbox"

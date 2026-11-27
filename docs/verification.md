@@ -2,7 +2,20 @@
 
 [English](verification.md) · [简体中文](verification.zh-CN.md) · [Home](../README.md)
 
-Initial verification: **1.0.0, 2026-11-25**. Current published verification: **1.0.1, 2026-11-26**. Local build host: Intel macOS 14.6.1. Targets: Intel Mac and Windows x64. All fixtures are synthetic and isolated from real personal work folders.
+Initial verification: **1.0.0, 2026-11-25**. Current verification: **1.0.2, 2026-11-27**; previous release evidence is retained below. Local build host: Intel macOS 14.6.1. Targets: Intel Mac and Windows x64. All fixtures are synthetic and isolated from real personal work folders.
+
+## 1.0.2 verification (2026-11-27)
+
+This update adds named collection ownership, batch selection, dynamic sharing and consistent exclusion rules. Schema 1→2 migration updates metadata while preserving chunks, vectors and client tokens. Existing selected connections do not widen automatically.
+
+- 44 local engine cases passed. Ten new cases cover directly selected Nuitka roots, combined markers, binary/category checks, rule precedence, archival/re-addition, legacy scope migration, old-vector reclamation, final commit validation, immediate hit names and ancestor links. Backup restore advances the library revision to invalidate open results.
+- 23 parser/release/real-service/MCP-resilience cases passed; one Windows-specific process case is skipped on Mac and must run in native Windows CI.
+- Native Playwright Electron acceptance exercises multi-folder IPC/multiselect options, independent names, collection/project selectors, pre-existing automatic connections receiving later projects, policy revocation, paused cleanup, inclusion restoration, partial success, archival and original preservation. The native dialog is tested through options and returned selections, not manual interaction with every OS picker.
+- An independent agent reproduced and rechecked in-flight deletion, stale hit names, ancestor links and edits during batch submission using separate isolated scripts. A 14 MB in-flight fixture remained archived after removal with zero old documents/chunks. UI checks include 1200×820 and 640×520, failed-row retry and saved automatic/selected modes, without related page errors.
+
+Both platform source CI and packaged acceptance include existing storage/appearance/guide regressions and the new collection flow. Exact native results and sources are identified by the [v1.0.2 release](https://github.com/JshengZ/personal-ai-knowledge-base/releases/tag/v1.0.2) `BUILD-INFO.json` and linked Actions. Publication requires successful source CI, secret scan and both native packaged jobs.
+
+[Batch folders](images/collections-batch.png) · [Collection scopes](images/collections-scopes.png) · [Automatic sharing](images/collections-sharing.png). Screenshots contain synthetic acceptance inputs only; installers start empty.
 
 ## Published 1.0.1 evidence
 

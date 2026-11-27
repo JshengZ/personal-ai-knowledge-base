@@ -12,12 +12,16 @@ mod onboarding;
 mod parser;
 mod processes;
 mod progress;
+mod rules;
+mod collections;
 mod retrieval;
 mod state;
 mod storage;
 mod store;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod collection_tests;
 #[cfg(test)]
 mod review_regressions;
 mod types;

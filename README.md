@@ -16,14 +16,14 @@ Light, dark and system appearance, custom accents, font sizes and density. [Appe
 
 ## Download
 
-| Platform         | v1.0.1 installer                                                                                                                          | Status                                                    |
+| Platform         | v1.0.2 installer                                                                                                                          | Status                                                    |
 | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| macOS, Intel x64 | [Download DMG](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.1/Personal-Knowledge-1.0.1-mac-x64.dmg)       | Packaged application tested on macOS 14.6.1               |
-| Windows, x64     | [Download installer](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.1/Personal-Knowledge-1.0.1-win-x64.exe) | Native CI and target-environment status: see verification |
+| macOS, Intel x64 | [Download DMG](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.2/Personal-Knowledge-1.0.2-mac-x64.dmg)       | Packaged application tested on macOS 14.6.1               |
+| Windows, x64     | [Download installer](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.2/Personal-Knowledge-1.0.2-win-x64.exe) | Native CI and target-environment status: see verification |
 
-[All releases](https://github.com/JshengZ/personal-ai-knowledge-base/releases) · [Checksums](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.1/SHA256SUMS.txt) · [Release notes](CHANGELOG.md)
+[All releases](https://github.com/JshengZ/personal-ai-knowledge-base/releases) · [Checksums](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.2/SHA256SUMS.txt) · [Release notes](CHANGELOG.md)
 
-Installers bundle the embedding model and English/Chinese OCR data, so downloads are approximately 800 MiB. Native Apple Silicon and ARM Windows installers are not included in v1.0.1. These installers are **unsigned**; macOS may require an explicit open authorization and Windows may display an unknown-publisher prompt. See the [installation guide](docs/user-guide.md).
+Installers bundle the embedding model and English/Chinese OCR data, so downloads are approximately 800 MiB. Native Apple Silicon and ARM Windows installers are not included in v1.0.2. These installers are **unsigned**; macOS may require an explicit open authorization and Windows may display an unknown-publisher prompt. See the [installation guide](docs/user-guide.md).
 
 ## Get started
 
@@ -32,7 +32,7 @@ First launch offers an optional, replayable guide on the real interface. New ins
 1. On macOS, open the DMG and drag **个人知识库** into Applications. On Windows, use the installer wizard to choose the program folder and install for the current user.
 2. On first launch, choose the knowledge data location (separate from the program folder), then view or skip the optional guide. Add a project or document folder from Sources.
 3. For answers and project summaries inside the app, enter your organization's model API URL, model name, and credentials in Settings. This is optional when your MCP agent already has its own chat model.
-4. Open **Agent 连接**, choose which projects to share, and select **一键配置 ZCode**. Existing ZCode settings are preserved and backed up. Other clients can use generated JSON, Codex TOML, or local Streamable HTTP settings.
+4. Open **Agent 连接**, keep the default automatic scope or select specific projects, and select **一键配置 ZCode**. Existing ZCode settings are preserved and backed up. Other clients can use generated JSON, Codex TOML, or local Streamable HTTP settings.
 5. Start a new agent conversation and ask a project question. Check that it calls the knowledge tools and cites the original sources.
 
 Files inside selected folders stay up to date after edits, renames, and deletions. Closing the window keeps indexing in the tray. Use the tray or app menu to quit. Each colleague installs their own independent knowledge base and chooses their own folders and credentials.
@@ -55,7 +55,9 @@ Screenshots show the actual Electron interface in an isolated empty library. Pat
 - **Responsive MCP:** initialization and tool discovery do not wait for indexing; slow queries have bounded waits and full-text fallback.
 
 - **MCP as the primary interface:** stdio and Streamable HTTP; scoped project access, confirmed memories, and optional memory proposals.
-- **Automatic indexing:** filesystem notifications, persistent work queues, retries, restart reconciliation, exclusions, and periodic checks.
+- **Named collections:** select multiple folders in one native dialog, name each independently, and filter a whole collection or an individual detected project.
+- **Automatic indexing:** filesystem notifications, persistent work queues, retries, reconciliation and explainable exclusions, including Nuitka outputs and already indexed noise.
+- **Automatic agent scope:** new connections include all shareable collections and future additions; existing selected scopes remain restricted until changed. Collection deletion immediately revokes retrieval and preserves project notes in the archive.
 - **Hybrid RAG:** Chinese-aware full-text search, vector retrieval, reciprocal rank fusion, and optional API reranking.
 - **Traceable sources:** PDF pages, code lines, DOCX paragraphs, slides, spreadsheet cells, and document versions.
 - **Project workspace:** editable goals, approaches, decisions, and API-generated summaries with evidence.
@@ -63,6 +65,14 @@ Screenshots show the actual Electron interface in an isolated empty library. Pat
 - **Local administration:** folder permissions, client settings, keychain credentials, backup/restore, background operation, and startup preferences.
 
 Supported inputs include PDF, DOCX, PPTX, XLSX, CSV/TSV, Markdown, text, common code files, Jupyter notebooks, images, and scanned PDFs. OCR runs locally for images and scanned PDFs. Embedded Office images/charts are not comprehensively extracted; legacy Office formats require conversion. Excel reads cached formula results; notebook execution outputs are excluded. Legacy Office formats and encrypted documents need conversion or decryption first.
+
+## Collections and indexing rules
+
+Choose multiple folders with **添加资料目录 → 选择目录**. Each folder keeps its chosen collection name, while code projects inside it remain independently selectable. Automatic rules skip known dependencies/build/cache folders, Nuitka `.build`/`.dist`/`.onefile-build` folders and recognizable generated bundles. Archives, installers, videos and binary content are not indexed; Office documents use dedicated parsers.
+
+Inspect skip reasons in Sources. Use content categories, explicit relative paths, or glob rules to refine the scope; **额外纳入的路径** can override automatic rules. Explicit exclusions win. Unknown generated folders cannot be classified with certainty, so review the scope before indexing a large disk folder. [Full rule precedence and upgrading](docs/user-guide.md#collections-and-exclusions).
+
+![Batch folder selection and independent names](docs/images/collections-batch.png)
 
 ## Models and data flow
 

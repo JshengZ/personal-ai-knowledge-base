@@ -1,5 +1,18 @@
 # Changelog / 更新日志
 
+## 1.0.2 — 2026-11-27
+
+- Named source collections retain user names independently of detected projects. File/search scopes include whole collections and subprojects; removal clears selectors and retrieval immediately and archives authored project context.
+- 原生批量选择目录，每个目录独立命名；集合／子项目分别筛选；移除后下拉、搜索和 MCP 立即撤销，手写背景保留归档；部分失败可单独重试。
+- New MCP connections automatically share eligible collections and later additions. Legacy selected scopes and independent memory permissions remain unchanged until explicitly edited.
+- 新连接默认自动共享允许 Agent 使用的全部资料与后续新增；旧连接保留指定范围，可一次切换，无需重写客户端接入配置。
+- One shared exclusion engine covers scanning, watching, parsing, cleanup and reads: Nuitka output suffixes, generated-bundle markers, dependencies/caches, category controls, binary checks, exact paths and glob rules. Skip reasons are visible; old excluded chunks/vectors are reclaimed even while discovery is paused.
+- 统一自适应排除 Nuitka 构建目录、明确生成标记、依赖／缓存、不支持媒体／安装包和二进制内容；可查看原因、按文件／目录／扩展名排除或额外纳入。
+- Independent review found and verified fixes for in-flight parsing after collection deletion, stale names in search hits, ancestor directory links, and edits during a partially failed batch request. Long directory forms keep their heading and action buttons visible.
+- 独立审查修复在途解析写回已删除集合、搜索名称不同步、上层目录链接漏检，以及批量提交中编辑导致失败项丢失；长弹窗固定标题和操作区。
+- Database schema 2 migration preserves existing chunk/vector IDs and client tokens. Older applications reject the upgraded schema; export a backup before upgrading.
+- 数据库升级到版本 2，保留片段、向量与连接令牌；升级前建议备份，升级后使用 v1.0.2 或更新版本。
+
 ## 1.0.1 — 2026-11-26
 
 - Simplified the desktop to one navigation rail and consistent forms, tables, dialogs and controls. Added persistent light/dark/system appearance, preset/custom accents, four font sizes, reading fonts, density and sidebar preferences; removed the sample-data entry point and generator.

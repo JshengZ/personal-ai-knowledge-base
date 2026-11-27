@@ -38,7 +38,7 @@ impl Store {
         }
         let connection = Sqlite::open(path)?;
         let schema: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if schema > 1 {
+        if schema > 2 {
             bail!("这个知识库由更新版本创建，请使用同版本或更新的应用打开");
         }
         connection.busy_timeout(Duration::from_secs(10))?;
@@ -88,7 +88,7 @@ impl Store {
                  id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
                  kind TEXT NOT NULL, message TEXT NOT NULL, details TEXT NOT NULL
              );
-             PRAGMA user_version=1;",
+             PRAGMA user_version=2;",
         )?;
         crate::counters::ensure(&connection, schema == 0)?;
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -101,6 +101,7 @@ impl Store {
             clients: RwLock::new(HashMap::new()),
             cancelled,
         };
+        crate::collections::repair(&store)?;
         store.reload_clients()?;
         Ok(store)
     }
@@ -192,6 +193,25 @@ impl Store {
         self.list_json("roots")
     }
     pub fn projects(&self) -> Result<Vec<Project>> {
+        let roots = self.roots()?;
+        let populated: HashSet<String> = {
+            let db = self.reader()?;
+            let mut statement = db.prepare("SELECT DISTINCT project_id FROM documents WHERE status!='removing'")?;
+            let values = statement.query_map([],|row|row.get(0))?.collect::<rusqlite::Result<_>>()?;
+            values
+        };
+        Ok(self.all_projects()?.into_iter().filter_map(|mut project| {
+            let root = roots.iter().find(|root| project.root_id.as_deref() == Some(root.id.as_str()))?;
+            if project.archived { return None; }
+            if !populated.contains(&project.id) && project.goal.is_empty() && project.approach.is_empty() && project.decisions.is_empty() { return None; }
+            if crate::rules::Rules::new(root,self.path.parent()?,Path::new("")).ok()?.skip(Path::new(&project.root_path),true).is_some() { return None; }
+            if crate::rules::normalized(Path::new(&project.root_path)) == crate::rules::normalized(Path::new(&root.path)) {
+                project.name = root.name.clone();
+            }
+            Some(project)
+        }).collect())
+    }
+    pub fn all_projects(&self) -> Result<Vec<Project>> {
         self.list_json("projects")
     }
     pub fn memories(&self) -> Result<Vec<Memory>> {
@@ -260,12 +280,13 @@ impl Store {
     pub fn save_project(&self, project: &Project) -> Result<()> {
         self.connection.lock().unwrap().execute(
             "INSERT INTO projects(id,path,data) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET path=excluded.path,data=excluded.data",
-            params![project.id,project.root_path,serde_json::to_string(project)?],
+            params![project.id,if project.archived { format!("pkb-archive:{}",project.id) } else { project.root_path.clone() },serde_json::to_string(project)?],
         )?;
         Ok(())
     }
 
     pub fn ensure_project(&self, path: &str, name: &str) -> Result<Project> {
+        let root = self.roots()?.into_iter().find(|root| crate::rules::contains(Path::new(&root.path), Path::new(path)));
         let existing: Option<String> = self
             .connection
             .lock()
@@ -275,12 +296,22 @@ impl Store {
             })
             .optional()?;
         if let Some(value) = existing {
-            return Ok(serde_json::from_str(&value)?);
+            let mut project: Project = serde_json::from_str(&value)?;
+            if !project.archived && project.root_id.as_deref() == root.as_ref().map(|root|root.id.as_str()) {
+                if let Some(root) = &root {
+                    if crate::rules::normalized(Path::new(path)) == crate::rules::normalized(Path::new(&root.path)) { project.name = root.name.clone(); }
+                }
+                return Ok(project);
+            }
+            project.archived = true;
+            self.save_project(&project)?;
         }
         let project = Project {
             id: identifier(),
-            name: name.into(),
+            name: root.as_ref().filter(|root|crate::rules::normalized(Path::new(path))==crate::rules::normalized(Path::new(&root.path))).map(|root|root.name.clone()).unwrap_or_else(||name.into()),
             root_path: path.into(),
+            root_id: root.as_ref().map(|root|root.id.clone()),
+            archived: false,
             goal: String::new(),
             approach: String::new(),
             decisions: vec![],
@@ -330,6 +361,11 @@ impl Store {
     }
 
     pub fn replace_document(&self, document: &Document, chunks: &[Chunk]) -> Result<()> {
+        let lexical = self.prepare_lexical(document, chunks)?;
+        self.replace_document_prepared(document, chunks, &lexical)
+    }
+
+    pub fn prepare_lexical(&self, document: &Document, chunks: &[Chunk]) -> Result<Vec<String>> {
         let project = self.project(&document.project_id)?;
         let relative = std::path::Path::new(&document.path)
             .strip_prefix(&project.root_path)
@@ -346,6 +382,13 @@ impl Store {
                 project.name, relative, document.title, chunk.text
             )));
         }
+        Ok(lexical)
+    }
+
+    // Callers can tokenize before taking the short library mutation lock, then
+    // recheck ownership and filters immediately before committing this write.
+    pub fn replace_document_prepared(&self, document: &Document, chunks: &[Chunk], lexical: &[String]) -> Result<()> {
+        if chunks.len() != lexical.len() { bail!("分词结果与文档片段数量不一致"); }
         let mut db = self.connection.lock().unwrap();
         let transaction = db.transaction()?;
         transaction.execute(
@@ -807,12 +850,15 @@ impl Store {
 
     pub fn hit(&self, chunk_id: &str) -> Result<SearchHit> {
         let db = self.connection.lock().unwrap();
-        let record: (String,String,String,String,String) = db.query_row(
-            "SELECT c.id,c.text,c.location,d.data,p.data FROM chunks c JOIN documents d ON d.id=c.document_id JOIN projects p ON p.id=d.project_id WHERE c.id=?1",
-            [chunk_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
+        let record: (String,String,String,String,String,Option<String>) = db.query_row(
+            "SELECT c.id,c.text,c.location,d.data,p.data,r.data FROM chunks c JOIN documents d ON d.id=c.document_id JOIN projects p ON p.id=d.project_id LEFT JOIN roots r ON r.id=d.root_id WHERE c.id=?1",
+            [chunk_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)),
         )?;
         let document: Document = serde_json::from_str(&record.3)?;
-        let project: Project = serde_json::from_str(&record.4)?;
+        let mut project: Project = serde_json::from_str(&record.4)?;
+        if let Some(root) = record.5.as_deref().map(serde_json::from_str::<Root>).transpose()? {
+            if crate::rules::normalized(Path::new(&root.path)) == crate::rules::normalized(Path::new(&project.root_path)) { project.name=root.name; }
+        }
         Ok(SearchHit {
             chunk_id: record.0,
             document_id: document.id,
@@ -844,11 +890,8 @@ impl Store {
         ).optional()?)
     }
 
-    pub fn finish_job(&self, path: &str) -> Result<()> {
-        self.connection
-            .lock()
-            .unwrap()
-            .execute("DELETE FROM jobs WHERE path=?1", [path])?;
+    pub fn finish_root_job(&self, path: &str, root_id: &str) -> Result<()> {
+        self.connection.lock().unwrap().execute("DELETE FROM jobs WHERE path=?1 AND root_id=?2", params![path,root_id])?;
         Ok(())
     }
 

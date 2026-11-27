@@ -4,7 +4,7 @@ use crate::{
     types::*,
 };
 use anyhow::{bail, Context, Result};
-use globset::{Glob, GlobSetBuilder};
+use globset::Glob;
 use notify::{EventKind, RecursiveMode, Watcher};
 use serde_json::json;
 use std::{
@@ -87,61 +87,17 @@ pub fn validate_exclusions(patterns: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn excluded_directory(name: &str) -> bool {
-    matches!(
-        name.to_ascii_lowercase().as_str(),
-        ".git"
-            | "node_modules"
-            | ".venv"
-            | "venv"
-            | "target"
-            | ".next"
-            | ".cache"
-            | ".local"
-            | "__pycache__"
-            | "$recycle.bin"
-            | "system volume information"
-            | "appdata"
-            | ".npm"
-            | ".pnpm-store"
-            | ".cargo"
-            | ".rustup"
-            | ".gradle"
-            | ".m2"
-            | ".terraform"
-            | "dist"
-            | "build"
-            | "coverage"
-            | "obj"
-    )
-}
-
 pub(crate) fn eligible(path: &Path, root: &Root, state: &AppState) -> Result<bool> {
-    // The walker never follows file symlinks. Apply the same rule to reads and
-    // queued cleanup so replacing a source with a link cannot revive old text.
-    if std::fs::symlink_metadata(path).is_ok_and(|value| value.file_type().is_symlink()) {
-        return Ok(false);
+    let rules=crate::rules::Rules::new(root,&state.home,&state.runtime.resources)?;
+    if rules.skip(path,false).is_some() { return Ok(false); }
+    if let Ok(canonical)=path.canonicalize() {
+        let mut resolved=root.clone();
+        resolved.path=Path::new(&root.path).canonicalize()?.to_string_lossy().into_owned();
+        let home=state.home.canonicalize().unwrap_or_else(|_|state.home.clone());
+        let resources=state.runtime.resources.canonicalize().unwrap_or_else(|_|state.runtime.resources.clone());
+        if crate::rules::Rules::new(&resolved,&home,&resources)?.skip(&canonical,false).is_some() { return Ok(false); }
     }
-    if path.starts_with(&state.home)
-        || (!state.runtime.resources.as_os_str().is_empty()
-            && path.starts_with(&state.runtime.resources))
-    {
-        return Ok(false);
-    }
-    let Ok(relative) = path.strip_prefix(&root.path) else {
-        return Ok(false);
-    };
-    if relative
-        .components()
-        .any(|part| excluded_directory(&part.as_os_str().to_string_lossy()))
-    {
-        return Ok(false);
-    }
-    let mut builder = GlobSetBuilder::new();
-    for pattern in &root.exclusions {
-        builder.add(Glob::new(pattern)?);
-    }
-    Ok(!builder.build()?.is_match(relative) && supported(path))
+    Ok(true)
 }
 
 pub async fn scan_all(state: Arc<AppState>, force: bool) -> Result<()> {
@@ -152,6 +108,7 @@ pub async fn scan_all(state: Arc<AppState>, force: bool) -> Result<()> {
     if state.scanning.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
+    let revision = state.store.metadata::<u64>("library_revision")?.unwrap_or(0);
     let copy = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         for mut root in copy.store.roots()? {
@@ -167,7 +124,14 @@ pub async fn scan_all(state: Arc<AppState>, force: bool) -> Result<()> {
                     root.error = Some(error.to_string());
                 }
             }
-            copy.store.save_root(&root)?;
+            // A concurrent edit/removal must never be overwritten by an old scan snapshot.
+            let _library=copy.library_lock.lock().unwrap();
+            if let Ok(mut current) = copy.store.root(&root.id) {
+                if current.path==root.path {
+                    current.last_scan=root.last_scan; current.error=root.error;
+                    copy.store.save_root(&current)?;
+                }
+            }
         }
         Ok::<_, anyhow::Error>(())
     })
@@ -175,6 +139,7 @@ pub async fn scan_all(state: Arc<AppState>, force: bool) -> Result<()> {
     state.scanning.store(false, Ordering::SeqCst);
     result??;
     state.store.set_metadata("last_scan", &timestamp())?;
+    if revision!=state.store.metadata::<u64>("library_revision")?.unwrap_or(0) { state.wake.notify_one(); }
     Ok(())
 }
 
@@ -191,11 +156,8 @@ pub(crate) fn reconcile_root(
     let directory = Path::new(&root.path)
         .canonicalize()
         .context("目录不可用，请重新关联目录")?;
-    let mut builder = GlobSetBuilder::new();
-    for pattern in &root.exclusions {
-        builder.add(Glob::new(pattern)?);
-    }
-    let excludes = builder.build()?;
+    let rules = crate::rules::Rules::new(root,&state.home,&state.runtime.resources)?;
+    let summary = std::cell::RefCell::new(crate::rules::ScanSummary::default());
     let mut found = HashSet::new();
     let mut formats = HashMap::<String, u64>::new();
     let mut walk_error = false;
@@ -206,24 +168,11 @@ pub(crate) fn reconcile_root(
         .max_depth(100)
         .into_iter()
         .filter_entry(|entry| {
-            if entry.depth() == 0 {
-                return true;
-            }
-            if entry.path().starts_with(&state.home)
-                || (!state.runtime.resources.as_os_str().is_empty()
-                    && entry.path().starts_with(&state.runtime.resources))
-            {
-                return false;
-            }
-            let name = entry.file_name().to_string_lossy();
-            if entry.file_type().is_dir() && excluded_directory(&name) {
-                return false;
-            }
-            let relative = entry
-                .path()
-                .strip_prefix(&directory)
-                .unwrap_or(entry.path());
-            !excludes.is_match(relative)
+            if !entry.file_type().is_dir() { return true; }
+            if let Some(reason)=rules.skip(entry.path(),true) {
+                summary.borrow_mut().record(root,entry.path(),true,reason);
+                false
+            } else { true }
         })
     {
         if state.stopping.load(Ordering::SeqCst) {
@@ -239,22 +188,13 @@ pub(crate) fn reconcile_root(
         if !entry.file_type().is_file() {
             continue;
         }
-        if !supported(entry.path()) {
-            let extension = entry
-                .path()
-                .extension()
-                .and_then(|value| value.to_str())
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            if [
-                "ppt", "doc", "xls", "xlsb", "docm", "pptm", "xlsm", "pps", "ppsx",
-            ]
-            .contains(&extension.as_str())
-            {
-                *formats.entry(extension).or_default() += 1;
-            }
+        if let Some(reason)=rules.skip(entry.path(),false) {
+            let extension=entry.path().extension().and_then(|value|value.to_str()).unwrap_or_default().to_ascii_lowercase();
+            if ["ppt","doc","xls","xlsb","docm","pptm","xlsm","pps","ppsx"].contains(&extension.as_str()) { *formats.entry(extension).or_default()+=1; }
+            summary.borrow_mut().record(root,entry.path(),false,reason);
             continue;
         }
+        summary.borrow_mut().eligible_files+=1;
         let path = entry.path().to_string_lossy().into_owned();
         found.insert(path.clone());
         if found.len() > 100_000 {
@@ -281,6 +221,8 @@ pub(crate) fn reconcile_root(
             }
         }
     }
+    let mut summary=summary.into_inner(); summary.scanned_at=timestamp();
+    state.store.set_metadata(&format!("scan_summary:{}",root.id),&summary)?;
     state
         .store
         .set_metadata(&format!("scan_found:{}", root.id), &found.len())?;
@@ -293,7 +235,7 @@ pub(crate) fn reconcile_root(
         // for every 64 legacy chunks removed.
         for path in state.store.queued_paths(&root.id)? {
             if !found.contains(&path) {
-                state.store.finish_job(&path)?;
+                state.store.finish_root_job(&path, &root.id)?;
             }
         }
         let removals = state
@@ -397,6 +339,7 @@ pub async fn run(state: Arc<AppState>) {
 }
 
 async fn run_cleanup(state: Arc<AppState>) {
+    let mut cursor=0i64; let mut revision=String::new();
     while !state.stopping.load(Ordering::SeqCst) {
         if !state.cleanup_allowed() {
             tokio::select! { _=tokio::time::sleep(Duration::from_secs(1))=>{}, _=state.shutdown.cancelled()=>break }
@@ -406,7 +349,8 @@ async fn run_cleanup(state: Arc<AppState>) {
             // Release maintenance access after each small transaction. A root
             // permission change or backup need not wait for a whole large purge.
             let _maintenance = state.maintenance.read().await;
-            cleanup_step(&state)
+            let _library = state.library_lock.lock().unwrap();
+            if cleanup_step(&state)? { Ok(true) } else { discover_excluded(&state,&mut cursor,&mut revision) }
         }
         .await;
         match result {
@@ -420,6 +364,30 @@ async fn run_cleanup(state: Arc<AppState>) {
             }
         }
     }
+}
+
+pub(crate) fn discover_excluded(state: &AppState, cursor: &mut i64, revision: &mut String) -> Result<bool> {
+    let stamp=format!("{}:{}",state.store.metadata::<u64>("library_revision")?.unwrap_or(0),state.store.metadata::<String>("last_scan")?.unwrap_or_default());
+    if *revision!=stamp { *revision=stamp; *cursor=0; }
+    if *cursor==i64::MAX { return Ok(false); }
+    let rows: Vec<(i64,String)>={
+        let db=state.store.reader_budget(2)?;
+        let mut statement=db.prepare("SELECT rowid,data FROM documents WHERE rowid>?1 ORDER BY rowid LIMIT 128")?;
+        let rows=statement.query_map([*cursor],|row|Ok((row.get(0)?,row.get(1)?)))?.collect::<rusqlite::Result<_>>()?; rows
+    };
+    if rows.is_empty() { *cursor=i64::MAX; return Ok(false); }
+    let roots=state.store.roots()?;
+    let mut ids=vec![];
+    for (_,text) in &rows {
+        let document: Document=serde_json::from_str(text)?;
+        if document.status=="removing" { continue; }
+        let permitted=roots.iter().find(|root|root.id==document.root_id).is_some_and(|root|
+            eligible(Path::new(&document.path),root,state).unwrap_or(false) && Path::new(&document.path).is_file());
+        if !permitted { ids.push(document.id); }
+    }
+    state.store.schedule_cleanup_many(&ids)?;
+    *cursor=rows.last().unwrap().0;
+    Ok(!ids.is_empty())
 }
 
 pub(crate) fn cleanup_step(state: &AppState) -> Result<bool> {
@@ -457,7 +425,7 @@ async fn run_jobs(state: Arc<AppState>) {
             let _maintenance = state.maintenance.read().await;
             match index_file(&state, &path, &root_id, force).await {
                 Ok(()) => {
-                    let _ = state.store.finish_job(&path);
+                    let _ = state.store.finish_root_job(&path, &root_id);
                     if state
                         .store
                         .pending_jobs()
@@ -467,6 +435,14 @@ async fn run_jobs(state: Arc<AppState>) {
                     }
                 }
                 Err(error) => {
+                    let _library = state.library_lock.lock().unwrap();
+                    // Removing a collection or changing rules cancels an in-flight job.
+                    // Do not resurrect its document or retry work for a new owner.
+                    if !state.store.root(&root_id).is_ok_and(|root| root.enabled
+                        && eligible(Path::new(&path), &root, &state).unwrap_or(false)) {
+                        let _ = state.store.finish_root_job(&path, &root_id);
+                        continue;
+                    }
                     let message = crate::storage::error_message(&error);
                     if let Ok(Some(mut document)) = state.store.document_by_path(&path) {
                         document.status = "error".into();
@@ -483,7 +459,7 @@ async fn run_jobs(state: Arc<AppState>) {
                         || message.contains("上限")
                         || message.contains("过大")
                     {
-                        let _ = state.store.finish_job(&path);
+                        let _ = state.store.finish_root_job(&path, &root_id);
                     } else {
                         let _ = state.store.retry_job(&path, attempts);
                     }
@@ -496,7 +472,7 @@ async fn run_jobs(state: Arc<AppState>) {
 }
 
 async fn index_file(state: &AppState, path: &str, root_id: &str, force: bool) -> Result<()> {
-    let root = state.store.root(root_id)?;
+    let Ok(root) = state.store.root(root_id) else { return Ok(()); };
     if !root.enabled {
         return Ok(());
     }
@@ -507,7 +483,7 @@ async fn index_file(state: &AppState, path: &str, root_id: &str, force: bool) ->
         Ok(path) => path,
         Err(_) => {
             if let Some(document) = state.store.document_by_path(path)? {
-                state.store.remove_document(&document.id)?;
+                state.store.schedule_cleanup_many(&[document.id])?;
             }
             return Ok(());
         }
@@ -517,10 +493,14 @@ async fn index_file(state: &AppState, path: &str, root_id: &str, force: bool) ->
     }
     let metadata = tokio::fs::metadata(&canonical).await?;
     let settings = state.store.settings()?;
-    let previous = state.store.document_by_path(path)?;
+    let (mut document, previous) = {
+        let _library = state.library_lock.lock().unwrap();
+        let Ok(root) = state.store.root(root_id) else { return Ok(()); };
+        if !root.enabled || !eligible(Path::new(path), &root, state)? { return Ok(()); }
+        let previous = state.store.document_by_path(path)?;
     if !force
         && previous.as_ref().is_some_and(|document| {
-            document.status == "ready"
+            document.root_id == root_id && document.status == "ready"
                 && document.modified_ms == modified_ms(&metadata)
                 && document.size == metadata.len()
         })
@@ -532,7 +512,7 @@ async fn index_file(state: &AppState, path: &str, root_id: &str, force: bool) ->
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or(&root.name);
-    let mut project = state
+    let project = state
         .store
         .ensure_project(&project_path.to_string_lossy(), project_name)?;
     let mut document = Document {
@@ -566,6 +546,8 @@ async fn index_file(state: &AppState, path: &str, root_id: &str, force: bool) ->
         document.version = previous.version.clone();
     }
     state.store.save_document(&document)?;
+    (document, previous)
+    };
     if metadata.len() > settings.max_file_mb.clamp(1, 32) * 1024 * 1024 {
         bail!("文件超过当前大小限制，可拆分后加入");
     }
@@ -578,12 +560,12 @@ async fn index_file(state: &AppState, path: &str, root_id: &str, force: bool) ->
     let version = blake3::hash(&bytes).to_hex().to_string();
     if previous
         .as_ref()
-        .is_some_and(|value| value.version == version && value.status == "ready")
+        .is_some_and(|value| value.root_id == root_id && value.version == version && value.status == "ready")
         && !force
     {
         document.status = "ready".into();
         document.chunks = previous.unwrap().chunks;
-        state.store.save_document(&document)?;
+        commit_indexed(state, &document, None)?;
         return Ok(());
     }
     let parsed = parse(state, &canonical, &settings).await?;
@@ -602,10 +584,6 @@ async fn index_file(state: &AppState, path: &str, root_id: &str, force: bool) ->
         bail!("文件仍在保存，将在写入稳定后重试");
     }
     let after_metadata = tokio::fs::metadata(&canonical).await?;
-    let current_root = state.store.root(root_id)?;
-    if !current_root.enabled {
-        return Ok(());
-    }
     document.version = version;
     document.modified_ms = modified_ms(&after_metadata);
     document.size = after_metadata.len();
@@ -641,12 +619,37 @@ async fn index_file(state: &AppState, path: &str, root_id: &str, force: bool) ->
         .sum::<u64>()
         .max(64 * 1024 * 1024);
     crate::storage::require_capacity(&state.home, &settings, growth)?;
-    state.store.replace_document(&document, &chunks)?;
-    tracing::info!(document_id=%document.id,bytes=document.size,chunks=chunks.len(),"document indexed");
+    // CPU tokenization runs without the library or database write lock.
+    let lexical = state.store.prepare_lexical(&document, &chunks)?;
+    if commit_indexed(state, &document, Some((&chunks, &lexical)))? {
+        tracing::info!(document_id=%document.id,bytes=document.size,chunks=chunks.len(),"document indexed");
+    }
+    Ok(())
+}
+
+pub(crate) fn commit_indexed(state: &AppState, document: &Document, content: Option<(&[Chunk], &[String])>) -> Result<bool> {
+    let _library = state.library_lock.lock().unwrap();
+    let Ok(root) = state.store.root(&document.root_id) else { return Ok(false); };
+    if state.stopping.load(Ordering::SeqCst) || !root.enabled
+        || !eligible(Path::new(&document.path), &root, state)? { return Ok(false); }
+    let Ok(project) = state.store.project(&document.project_id) else { return Ok(false); };
+    if project.archived || project.root_id.as_deref() != Some(root.id.as_str()) { return Ok(false); }
+    let metadata = std::fs::metadata(&document.path)?;
+    if metadata.len() != document.size || modified_ms(&metadata) != document.modified_ms {
+        bail!("文件仍在保存，将在写入稳定后重试");
+    }
+    if let Some((chunks, lexical)) = content {
+        state.store.replace_document_prepared(document, chunks, lexical)?;
+    } else {
+        state.store.save_document(document)?;
+    }
+    // Re-read after invalidating old evidence; never write the pre-parse project
+    // snapshot over a newer user edit, archived state, or summary-stale flag.
+    let mut project = state.store.project(&document.project_id)?;
     project.updated_at = timestamp();
     state.store.save_project(&project)?;
     state.store.set_metadata("last_indexed", &timestamp())?;
-    Ok(())
+    Ok(true)
 }
 
 pub fn find_project(path: &Path, root: &Path) -> PathBuf {
@@ -810,6 +813,7 @@ async fn run_embeddings(state: Arc<AppState>) {
             .map(|chunk| chunk.text.clone())
             .collect::<Vec<_>>();
         let started = std::time::Instant::now();
+        let revision=state.store.metadata::<u64>("library_revision").ok().flatten().unwrap_or(0);
         let mut calculation = Box::pin(state.models.embed(&settings, &texts, false));
         let result = loop {
             tokio::select! {
@@ -818,6 +822,7 @@ async fn run_embeddings(state: Arc<AppState>) {
                 _ = tokio::time::sleep(Duration::from_millis(500)) => {
                     let current = state.store.settings().unwrap_or_default();
                     if current.paused || !state.indexing_allowed()
+                        || state.store.metadata::<u64>("library_revision").ok().flatten().unwrap_or(0)!=revision
                         || current.embedding_mode != settings.embedding_mode
                         || current.indexing_profile != settings.indexing_profile
                         || state.models.embedding_model(&current) != model {
@@ -839,34 +844,30 @@ async fn run_embeddings(state: Arc<AppState>) {
             Ok(vectors) => {
                 let current = state.store.settings().unwrap_or_default();
                 let mut saved = !current.paused && state.models.embedding_model(&current) == model;
+                let mut save_error = None;
                 if saved {
-                    for (chunk, vector) in chunks.iter().zip(vectors) {
-                        if crate::storage::require_capacity(&state.home, &current, 2 * 1024 * 1024)
-                            .is_err()
-                        {
-                            saved = false;
-                            break;
-                        }
-                        if let Ok(document) = state.store.document(&chunk.document_id) {
-                            if state
-                                .check_document(
-                                    &Scope::Owner,
-                                    &document,
-                                    Models::remote_embeddings(&settings),
-                                )
-                                .is_ok()
-                            {
-                                if let Err(error) =
-                                    state.store.save_embedding(&chunk.id, &model, &vector)
-                                {
-                                    saved = false;
-                                    *state.semantic_error.write().await = Some(error.to_string());
-                                    break;
+                    let _library = state.library_lock.lock().unwrap();
+                    saved = state.store.metadata::<u64>("library_revision").ok().flatten().unwrap_or(0) == revision;
+                    if saved {
+                        for (chunk, vector) in chunks.iter().zip(vectors) {
+                            if crate::storage::require_capacity(&state.home, &current, 2 * 1024 * 1024).is_err() {
+                                saved = false;
+                                break;
+                            }
+                            if let Ok(document) = state.store.document(&chunk.document_id) {
+                                if state.check_document(&Scope::Owner, &document, Models::remote_embeddings(&settings)).is_ok()
+                                    && state.store.has_chunk(&document.id, &chunk.id) {
+                                    if let Err(error) = state.store.save_embedding(&chunk.id, &model, &vector) {
+                                        saved = false;
+                                        save_error = Some(error.to_string());
+                                        break;
+                                    }
                                 }
                             }
                         }
                     }
                 }
+                if let Some(error) = save_error { *state.semantic_error.write().await = Some(error); }
                 if saved {
                     cursor = next;
                     {

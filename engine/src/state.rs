@@ -23,6 +23,7 @@ pub struct AppState {
     pub embedding_busy: AtomicBool,
     pub semantic_error: RwLock<Option<String>>,
     pub requests: Arc<tokio::sync::Semaphore>,
+    pub library_lock: std::sync::Mutex<()>,
     pub shutdown: tokio_util::sync::CancellationToken,
     pub embedding_metrics: std::sync::Mutex<crate::progress::EmbeddingMetrics>,
 }
@@ -89,6 +90,7 @@ impl AppState {
             embedding_busy: AtomicBool::new(false),
             semantic_error: RwLock::new(None),
             requests: Arc::new(tokio::sync::Semaphore::new(8)),
+            library_lock: std::sync::Mutex::new(()),
             shutdown: tokio_util::sync::CancellationToken::new(),
             embedding_metrics: std::sync::Mutex::new(crate::progress::EmbeddingMetrics::default()),
         }))
@@ -124,13 +126,13 @@ impl AppState {
             .filter(|project| {
                 eligible_roots
                     .iter()
-                    .any(|root| Path::new(&project.root_path).starts_with(&root.path))
+                    .any(|root| project.root_id.as_deref() == Some(root.id.as_str()))
                     && project_id.is_none_or(|id| project.id == id)
                     && match scope {
                         Scope::Owner => true,
                         Scope::Agent(_) => current
                             .as_ref()
-                            .is_some_and(|client| client.project_ids.contains(&project.id)),
+                            .is_some_and(|client| client.scope_mode == "all" || client.project_ids.contains(&project.id)),
                     }
             })
             .map(|project| project.id)

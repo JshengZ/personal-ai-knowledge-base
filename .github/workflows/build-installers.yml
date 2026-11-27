@@ -42,12 +42,13 @@ jobs:
       - run: npm run dist:${{ matrix.target }}
       - run: node scripts/verify-package.mjs ${{ matrix.target }}
       - run: node --test tests/packaged.test.mjs
-      - name: Packaged appearance, migration and optional guide
+      - name: Packaged appearance, migration, guide and collections
         env:
           PKB_PACKAGED_APP: ${{ matrix.target == 'win' && format('{0}\release\win-x64\win-unpacked\Personal-Knowledge.exe', github.workspace) || format('{0}/release/mac-x64/mac/个人知识库.app/Contents/MacOS/个人知识库', github.workspace) }}
           PKB_UI_ARTIFACTS: ${{ github.workspace }}/.local/package-storage-screenshots
           PKB_TOUR_ARTIFACTS: ${{ github.workspace }}/.local/package-guide-screenshots
-        run: node --test --test-concurrency=1 tests/desktop-storage.test.mjs tests/onboarding.test.mjs
+          PKB_COLLECTION_ARTIFACTS: ${{ github.workspace }}/.local/package-collection-screenshots
+        run: node --test --test-concurrency=1 tests/desktop-storage.test.mjs tests/onboarding.test.mjs tests/collections.test.mjs
       - run: node scripts/release-info.mjs
       - name: Verify installer source provenance
         run: node --input-type=module -e "import fs from 'node:fs'; const info=JSON.parse(fs.readFileSync('release/BUILD-INFO.json','utf8')); if(info.source_commit!==process.env.GITHUB_SHA) throw new Error('Installer source commit mismatch');"

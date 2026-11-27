@@ -56,12 +56,14 @@ pub fn create(state: &AppState, input: Value) -> Result<Value> {
         kind: input["kind"].as_str().unwrap_or("zcode").into(),
         enabled: true,
         project_ids: ids,
+        scope_mode: input["scope_mode"].as_str().unwrap_or(if input.get("project_ids").is_some() { "selected" } else { "all" }).into(),
         include_profile: input["include_profile"].as_bool().unwrap_or(false),
         can_propose: input["can_propose"].as_bool().unwrap_or(false),
         created_at: timestamp(),
         last_used: None,
         config_path: None,
     };
+    if !["all","selected"].contains(&client.scope_mode.as_str()) { bail!("共享模式无效"); }
     let secret = format!(
         "{}{}",
         identifier().replace('-', ""),
@@ -112,7 +114,12 @@ pub fn update(state: &AppState, id: &str, input: Value) -> Result<Connection> {
     if let Some(propose) = input["can_propose"].as_bool() {
         client.can_propose = propose;
     }
+    if let Some(mode) = input["scope_mode"].as_str() {
+        if !["all","selected"].contains(&mode) { bail!("共享模式无效"); }
+        client.scope_mode = mode.into();
+    }
     if input.get("project_ids").is_some() {
+        if input.get("scope_mode").is_none() { client.scope_mode="selected".into(); }
         let ids: Vec<String> = serde_json::from_value(input["project_ids"].clone())?;
         let projects = state.store.projects()?;
         if ids

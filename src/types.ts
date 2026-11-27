@@ -22,6 +22,14 @@ export interface Evidence {
   chunk_id?: string;
   location?: Location;
 }
+export interface IndexFilters {
+  automatic: boolean;
+  documents: boolean;
+  code: boolean;
+  images: boolean;
+  excluded_paths: string[];
+  included_paths: string[];
+}
 export interface Root {
   id: string;
   path: string;
@@ -29,6 +37,7 @@ export interface Root {
   policy: "local" | "company" | "agents";
   enabled: boolean;
   exclusions: string[];
+  filters?: IndexFilters;
   last_scan: string | null;
   error: string | null;
 }
@@ -40,6 +49,8 @@ export interface Project {
   id: string;
   name: string;
   root_path: string;
+  root_id?: string | null;
+  archived?: boolean;
   goal: string;
   approach: string;
   decisions: Decision[];
@@ -108,6 +119,7 @@ export interface AgentConnection {
   kind: string;
   enabled: boolean;
   project_ids: string[];
+  scope_mode?: "all" | "selected";
   include_profile: boolean;
   can_propose: boolean;
   created_at: string;
@@ -160,6 +172,19 @@ export interface Snapshot {
   onboarding?: { version: number; status: "new" | "skipped" | "completed" };
   roots: Root[];
   projects: Project[];
+  archived_projects?: Project[];
+  library_revision?: number;
+  scan_summaries?: {
+    root_id: string;
+    summary: {
+      eligible_files: number;
+      skipped_files: number;
+      skipped_directories: number;
+      reasons: Record<string, number>;
+      examples: { path: string; directory: boolean; reason: string }[];
+      scanned_at: string;
+    } | null;
+  }[];
   documents: Document[];
   memories: Memory[];
   connections: AgentConnection[];
@@ -242,6 +267,7 @@ declare global {
         body?: unknown,
       ) => Promise<unknown>;
       chooseDirectory: () => Promise<string | null>;
+      chooseDirectories: () => Promise<string[]>;
       openSource: (id: string) => Promise<void>;
       revealData: () => Promise<void>;
       storageInfo: () => Promise<StorageInfo>;

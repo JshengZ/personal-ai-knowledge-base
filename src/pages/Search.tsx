@@ -4,6 +4,11 @@ import ReactMarkdown from "react-markdown";
 import { request } from "../api";
 import { useKnowledge } from "../context";
 import type { SearchResult } from "../types";
+import {
+  ScopePicker,
+  scopeParameters,
+  validScope,
+} from "../components/ScopePicker";
 import { Select, Busy, Empty, FileIcon } from "../components/ui";
 
 let submittedQuestion: { query: string; project: string } | null = null;
@@ -54,6 +59,7 @@ export function Search() {
   const initial = submittedQuestion;
   const [query, setQuery] = useState(initial?.query || "");
   const [scope, setScope] = useState(initial?.project || "");
+  const effectiveScope = validScope(scope, data) ? scope : "";
   const [extension, setExtension] = useState("");
   const [result, setResult] = useState<SearchResult | null>(null);
   const [busy, setBusy] = useState(false);
@@ -61,6 +67,7 @@ export function Search() {
   const [lastQuery, setLastQuery] = useState("");
   const [searchOnly, setSearchOnly] = useState(false);
   const requestSequence = useRef(0);
+  const lastRevision = useRef(data.library_revision);
   const run = async (
     text: string,
     project: string,
@@ -79,7 +86,7 @@ export function Search() {
         only ? "/search" : "/ask",
         {
           query: text.trim(),
-          project_id: project || null,
+          ...scopeParameters(project),
           limit: 12,
           extension: fileType || null,
           updated_after: null,
@@ -94,6 +101,13 @@ export function Search() {
     }
   };
   useEffect(() => {
+    if (lastRevision.current === data.library_revision) return;
+    lastRevision.current = data.library_revision;
+    requestSequence.current++;
+    setResult(null);
+    setBusy(false);
+  }, [data.library_revision]);
+  useEffect(() => {
     const pending = submittedQuestion;
     submittedQuestion = null;
     if (pending) {
@@ -106,7 +120,7 @@ export function Search() {
   }, []);
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    void run(query, scope, searchOnly);
+    void run(query, effectiveScope, searchOnly);
   };
   const answer = result?.answer?.replace(
     /\[(\d+)\]/g,
@@ -141,19 +155,13 @@ export function Search() {
         </div>
         <div className="search-options">
           <label>
-            项目范围
-            <Select
+            资料范围
+            <ScopePicker
+              data={data}
               aria-label="项目范围"
-              value={scope}
+              value={effectiveScope}
               onChange={(event) => setScope(event.target.value)}
-            >
-              <option value="">全部项目</option>
-              {data.projects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name}
-                </option>
-              ))}
-            </Select>
+            />
           </label>
           <label>
             文件类型

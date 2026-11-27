@@ -86,6 +86,9 @@ pub fn router(app: Arc<AppState>, token: String, port: u16) -> Router {
         .route("/state", get(snapshot))
         .route("/documents", get(documents))
         .route("/roots", post(add_root))
+        .route("/roots/batch", post(add_roots))
+        .route("/roots/inspect", post(inspect_roots))
+        .route("/sources/{id}/exclude", post(exclude_source))
         .route("/roots/{id}", patch(update_root).delete(remove_root))
         .route("/scan", post(scan))
         .route("/projects/{id}", patch(update_project))
@@ -174,6 +177,7 @@ async fn snapshot(State(state): State<ApiState>) -> ApiResult {
     let settings = app.store.settings()?;
     let semantic_error = app.semantic_error.read().await.clone();
     let mut stats = app.store.stats()?;
+    stats["projects"]=json!(app.store.projects()?.len());
     let mut discovered = 0u64;
     let mut format_warnings = vec![];
     for root in app.store.roots()?.iter().filter(|root| root.enabled) {
@@ -192,8 +196,8 @@ async fn snapshot(State(state): State<ApiState>) -> ApiResult {
     stats["discovered"] = json!(discovered
         .max(stats["documents"].as_u64().unwrap_or(0) + stats["pending"].as_u64().unwrap_or(0)));
     Ok(Json(
-        json!({"version":env!("CARGO_PKG_VERSION"),"roots":app.store.roots()?,"projects":app.store.projects()?,
-        "documents":documents.into_iter().filter(|document| document.status != "removing").take(100).collect::<Vec<_>>(),"memories":app.store.memories()?,
+        json!({"version":env!("CARGO_PKG_VERSION"),"roots":app.store.roots()?,"projects":app.store.projects()?,"archived_projects":app.store.all_projects()?.into_iter().filter(|project|project.archived).collect::<Vec<_>>(),"library_revision":app.store.metadata::<u64>("library_revision")?.unwrap_or(0),"scan_summaries":app.store.roots()?.iter().map(|root| Ok(json!({"root_id":root.id,"summary":app.store.metadata::<Value>(&format!("scan_summary:{}",root.id))?}))).collect::<Result<Vec<_>>>()?,
+        "documents":documents.into_iter().filter(|document| document.status != "removing" && app.store.root(&document.root_id).is_ok_and(|root|crate::indexer::eligible(std::path::Path::new(&document.path),&root,app).unwrap_or(false))).take(100).collect::<Vec<_>>(),"memories":app.store.memories()?,
         "connections":app.store.connections()?,"stats":stats,"settings":settings,"onboarding":crate::onboarding::load(&app.store)?,
         "events":app.store.events(60)?,"last_indexed":app.store.metadata::<String>("last_indexed")?,
         "last_scan":app.store.metadata::<String>("last_scan")?,"scanning":app.scanning.load(Ordering::SeqCst),
@@ -211,7 +215,8 @@ async fn documents(
 ) -> ApiResult {
     let mut documents = state.app.store.documents()?;
     documents.retain(|document| {
-        if document.status == "removing" { return false; }
+        if document.status == "removing" || !state.app.store.root(&document.root_id).is_ok_and(|root|crate::indexer::eligible(std::path::Path::new(&document.path),&root,&state.app).unwrap_or(false)) { return false; }
+        if query.get("collection_id").is_some_and(|id|document.root_id!=*id) { return false; }
         query
             .get("project_id")
             .is_none_or(|id| document.project_id == *id)
@@ -238,7 +243,7 @@ async fn documents(
     ))
 }
 
-fn add_root_impl(app: &AppState, input: &Value) -> Result<Root> {
+fn root_candidate(app: &AppState, input: &Value) -> Result<Root> {
     crate::storage::require_capacity(&app.home, &app.store.settings()?, 64 * 1024 * 1024)?;
     let raw = input["path"].as_str().context("请选择资料目录")?;
     let path = std::path::Path::new(raw)
@@ -255,8 +260,8 @@ fn add_root_impl(app: &AppState, input: &Value) -> Result<Root> {
     }
     let path = path.to_string_lossy().into_owned();
     if app.store.roots()?.iter().any(|root| {
-        std::path::Path::new(&path).starts_with(&root.path)
-            || std::path::Path::new(&root.path).starts_with(&path)
+        crate::rules::contains(std::path::Path::new(&root.path),std::path::Path::new(&path))
+            || crate::rules::contains(std::path::Path::new(&path),std::path::Path::new(&root.path))
     }) {
         bail!("这个目录与已有目录重叠，请直接管理已添加的目录");
     }
@@ -278,6 +283,7 @@ fn add_root_impl(app: &AppState, input: &Value) -> Result<Root> {
                 .to_string_lossy()
                 .into_owned()
         });
+    if name.is_empty() || name.chars().count()>100 { bail!("集合名称应为 1–100 字"); }
     let root = Root {
         id: identifier(),
         path,
@@ -285,14 +291,80 @@ fn add_root_impl(app: &AppState, input: &Value) -> Result<Root> {
         policy: policy.into(),
         enabled: true,
         exclusions,
+        filters: input.get("filters").map(|value|serde_json::from_value(value.clone())).transpose()?.unwrap_or_default(),
         created_at: timestamp(),
         last_scan: None,
         error: None,
     };
+    crate::rules::validate(&root)?;
+    Ok(root)
+}
+
+fn add_root_impl(app: &AppState, input: &Value) -> Result<Root> {
+    let root = root_candidate(app,input)?;
     app.store.save_root(&root)?;
-    app.store.ensure_project(&root.path, &root.name)?;
+    crate::collections::touch(&app.store)?;
     app.wake.notify_one();
     Ok(root)
+}
+async fn add_roots(State(state): State<ApiState>, Json(input): Json<Value>) -> ApiResult {
+    let _maintenance=state.app.maintenance.read().await;
+    let _library=state.app.library_lock.lock().unwrap();
+    let items=input["items"].as_array().context("请选择资料目录")?;
+    if items.is_empty() || items.len()>50 { bail!("每次可添加 1–50 个资料目录"); }
+    let mut added=vec![]; let mut errors=vec![];
+    let mut sorted=items.iter().collect::<Vec<_>>();
+    sorted.sort_by_key(|item|std::path::Path::new(item["path"].as_str().unwrap_or_default()).canonicalize().map(|path|path.components().count()).unwrap_or(usize::MAX));
+    for item in sorted {
+        match add_root_impl(&state.app,item) {
+            Ok(root)=>added.push(root),
+            Err(error)=>errors.push(json!({"path":item["path"],"name":item["name"],"error":error.to_string()})),
+        }
+    }
+    Ok(Json(json!({"added":added,"errors":errors})))
+}
+async fn inspect_roots(State(state): State<ApiState>, Json(input): Json<Value>) -> ApiResult {
+    let items=input["items"].as_array().context("请选择资料目录")?;
+    if items.len()>50 { bail!("每次最多检查 50 个目录"); }
+    let mut results=vec![];
+    for item in items {
+        match root_candidate(&state.app,item) {
+            Ok(root)=>{
+                let rules=crate::rules::Rules::new(&root,&state.app.home,&state.app.runtime.resources)?;
+                results.push(json!({"path":item["path"],"canonical_path":root.path,"name":root.name,"warning":rules.skip(std::path::Path::new(&root.path),true)}));
+            },
+            Err(error)=>results.push(json!({"path":item["path"],"error":error.to_string()})),
+        }
+    }
+    let canonical=results.iter().map(|item|item["canonical_path"].as_str().map(str::to_string)).collect::<Vec<_>>();
+    for index in 0..results.len() {
+        if let Some(path)=&canonical[index] {
+            if canonical.iter().enumerate().any(|(other,parent)|other!=index && parent.as_ref().is_some_and(|parent|crate::rules::contains(std::path::Path::new(parent),std::path::Path::new(path)) && (parent!=path || other<index))) {
+                results[index]["error"]=json!("与待添加的父目录或重复目录重叠，请保留一个范围");
+            }
+        }
+    }
+    Ok(Json(json!({"items":results})))
+}
+async fn exclude_source(State(state): State<ApiState>, Path(id): Path<String>, Json(input): Json<Value>) -> ApiResult {
+    let _maintenance=state.app.maintenance.read().await;
+    let _library=state.app.library_lock.lock().unwrap();
+    let document=state.app.store.document(&id)?;
+    let mut root=state.app.store.root(&document.root_id)?;
+    let relative=crate::rules::relative(std::path::Path::new(&root.path),std::path::Path::new(&document.path)).context("文件不在集合内")?;
+    match input["scope"].as_str().unwrap_or("file") {
+        "file"=>root.filters.excluded_paths.push(relative),
+        "directory"=>root.filters.excluded_paths.push(relative.rsplit_once('/').map(|(parent,_)|parent.to_string()).unwrap_or(".".into())),
+        "extension"=>root.exclusions.push(format!("**/*.{}",document.extension)),
+        _=>bail!("排除范围无效"),
+    }
+    root.filters.excluded_paths.sort();root.filters.excluded_paths.dedup();
+    root.exclusions.sort();root.exclusions.dedup();
+    crate::rules::validate(&root)?;
+    state.app.store.save_root(&root)?;
+    crate::collections::touch(&state.app.store)?;
+    state.app.wake.notify_one();
+    Ok(Json(json!({"ok":true,"root":root})))
 }
 
 async fn validate_storage(State(state): State<ApiState>, Json(input): Json<Value>) -> ApiResult {
@@ -304,6 +376,7 @@ async fn validate_storage(State(state): State<ApiState>, Json(input): Json<Value
 
 async fn add_root(State(state): State<ApiState>, Json(input): Json<Value>) -> ApiResult {
     let _maintenance = state.app.maintenance.read().await;
+    let _library=state.app.library_lock.lock().unwrap();
     Ok(Json(json!(add_root_impl(&state.app, &input)?)))
 }
 
@@ -313,7 +386,8 @@ async fn update_root(
     Json(input): Json<Value>,
 ) -> ApiResult {
     let app = &state.app;
-    let _maintenance = app.maintenance.write().await;
+    let _maintenance = app.maintenance.read().await;
+    let _library=app.library_lock.lock().unwrap();
     let mut root = app.store.root(&id)?;
     if let Some(path) = input["path"].as_str() {
         let canonical = std::path::Path::new(path)
@@ -339,16 +413,16 @@ async fn update_root(
                 .into_iter()
                 .filter(|document| document.root_id == id)
             {
-                app.store.remove_document(&document.id)?;
+                app.store.schedule_cleanup_many(&[document.id])?;
             }
             root.path = canonical.to_string_lossy().into_owned();
             root.last_scan = None;
             root.error = None;
-            app.store.ensure_project(&root.path, &root.name)?;
+            for mut project in app.store.all_projects()?.into_iter().filter(|project|project.root_id.as_deref()==Some(id.as_str())) { project.archived=true; app.store.save_project(&project)?; }
         }
     }
     if let Some(name) = input["name"].as_str() {
-        if name.trim().is_empty() {
+        if name.trim().is_empty() || name.trim().chars().count()>100 {
             bail!("名称不能为空");
         }
         root.name = name.trim().into();
@@ -367,31 +441,20 @@ async fn update_root(
         indexer::validate_exclusions(&patterns)?;
         root.exclusions = patterns;
     }
+    if let Some(filters)=input.get("filters") { root.filters=serde_json::from_value(filters.clone())?; }
+    crate::rules::validate(&root)?;
     app.store.save_root(&root)?;
+    crate::collections::touch(&app.store)?;
     app.wake.notify_one();
     Ok(Json(json!(root)))
 }
 
 async fn remove_root(State(state): State<ApiState>, Path(id): Path<String>) -> ApiResult {
-    let app = &state.app;
-    let _maintenance = app.maintenance.write().await;
-    let mut root = app.store.root(&id)?;
-    root.enabled = false;
-    app.store.save_root(&root)?;
-    let ids = app
-        .store
-        .documents()?
-        .into_iter()
-        .filter(|document| document.root_id == id)
-        .map(|document| document.id)
-        .collect::<Vec<_>>();
-    app.store.schedule_cleanup_many(&ids)?;
-    {
-        let db = app.store.connection.lock().unwrap();
-        db.execute("DELETE FROM jobs WHERE root_id=?1", [&id])?;
-        db.execute("DELETE FROM roots WHERE id=?1", [&id])?;
-    }
-    app.wake.notify_one();
+    let _maintenance=state.app.maintenance.read().await;
+    let _library=state.app.library_lock.lock().unwrap();
+    state.app.store.root(&id)?;
+    crate::collections::remove(&state.app.store,&id)?;
+    state.app.wake.notify_one();
     Ok(Json(json!({"ok":true})))
 }
 
@@ -410,6 +473,7 @@ async fn update_project(
     Json(input): Json<Value>,
 ) -> ApiResult {
     let _maintenance = state.app.maintenance.read().await;
+    let _library=state.app.library_lock.lock().unwrap();
     let mut project = state.app.store.project(&id)?;
     for (key, target) in [
         ("name", &mut project.name),
@@ -433,6 +497,8 @@ async fn update_project(
     project.summary_stale = false;
     project.updated_at = timestamp();
     state.app.store.save_project(&project)?;
+    if let Some(id)=&project.root_id { if let Ok(mut root)=state.app.store.root(id) { if crate::rules::normalized(std::path::Path::new(&root.path))==crate::rules::normalized(std::path::Path::new(&project.root_path)) { root.name=project.name.clone();state.app.store.save_root(&root)?; } } }
+    crate::collections::touch(&state.app.store)?;
     Ok(Json(json!(project)))
 }
 
@@ -641,6 +707,7 @@ async fn test_connection(State(state): State<ApiState>, Path(id): Path<String>) 
     let request = retrieval::SearchRequest {
         query: "项目 技术 方案 实验".into(),
         project_id: None,
+        collection_id: None,
         limit: Some(3),
         extension: None,
         updated_after: None,

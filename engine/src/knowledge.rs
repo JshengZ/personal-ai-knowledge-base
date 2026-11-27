@@ -98,7 +98,12 @@ pub async fn summarize(state: &Arc<AppState>, project_id: &str) -> Result<Projec
         bail!("项目摘要过长，请重试");
     }
     let _maintenance = state.maintenance.read().await;
-    if state.store.project(project_id)?.updated_at != project.updated_at {
+    let _library = state.library_lock.lock().unwrap();
+    let current = state.store.project(project_id)?;
+    if current.archived || current.root_id.as_ref().is_none_or(|id|state.store.root(id).is_err()) {
+        bail!("项目所属的资料集合已移除，请重新选择项目");
+    }
+    if current.updated_at != project.updated_at {
         bail!("摘要生成期间项目内容已修改，请重新生成");
     }
     if !state.valid_evidence(&Scope::Owner, &evidence, true) {

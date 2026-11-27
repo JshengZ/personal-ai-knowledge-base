@@ -18,6 +18,8 @@ pub struct Root {
     pub policy: String,
     pub enabled: bool,
     pub exclusions: Vec<String>,
+    #[serde(default)]
+    pub filters: IndexFilters,
     pub created_at: String,
     pub last_scan: Option<String>,
     #[serde(default)]
@@ -29,6 +31,10 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub root_path: String,
+    #[serde(default)]
+    pub root_id: Option<String>,
+    #[serde(default)]
+    pub archived: bool,
     pub goal: String,
     pub approach: String,
     pub decisions: Vec<Decision>,
@@ -130,11 +136,32 @@ pub struct Connection {
     pub kind: String,
     pub enabled: bool,
     pub project_ids: Vec<String>,
+    #[serde(default = "selected_scope")]
+    pub scope_mode: String,
     pub include_profile: bool,
     pub can_propose: bool,
     pub created_at: String,
     pub last_used: Option<String>,
     pub config_path: Option<String>,
+}
+
+fn selected_scope() -> String { "selected".into() }
+
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct IndexFilters {
+    pub automatic: bool,
+    pub documents: bool,
+    pub code: bool,
+    pub images: bool,
+    pub excluded_paths: Vec<String>,
+    pub included_paths: Vec<String>,
+}
+impl Default for IndexFilters {
+    fn default() -> Self {
+        Self { automatic: true, documents: true, code: true, images: true,
+            excluded_paths: vec![], included_paths: vec![] }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]

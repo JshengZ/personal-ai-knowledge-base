@@ -21,6 +21,8 @@ npm test
 npm run test:integration
 npm run test:resilience
 npm run test:desktop
+npm run test:onboarding
+npm run test:collections
 npm run dev
 ```
 

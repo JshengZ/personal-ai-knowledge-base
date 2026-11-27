@@ -55,7 +55,7 @@ fn export_locked(state: &AppState) -> Result<Vec<u8>> {
     }
     {
         let snapshot = Sqlite::open(&temporary)?;
-        snapshot.execute_batch("DELETE FROM connections; DELETE FROM jobs; DELETE FROM events;")?;
+        snapshot.execute_batch("PRAGMA foreign_keys=ON; DELETE FROM documents WHERE status='removing' OR root_id NOT IN (SELECT id FROM roots); DELETE FROM connections; DELETE FROM jobs; DELETE FROM events;")?;
         let mut settings = state.store.settings()?;
         settings.chat.has_key = false;
         settings.embedding.has_key = false;
@@ -166,11 +166,12 @@ fn normalize_restore(source: &Sqlite, source_path: &std::path::Path, target_path
     normalized.set_metadata("settings", &settings)?;
     normalized.set_metadata("credential_namespace", &namespace)?;
     for mut root in normalized.roots()? {
-        crate::indexer::validate_exclusions(&root.exclusions)?;
+        crate::rules::validate(&root)?;
         root.enabled = false;
         root.error = Some("备份已还原，请确认或重新关联原目录后开启同步。".into());
         normalized.save_root(&root)?;
     }
+    crate::collections::repair(&normalized)?;
     let appearance = crate::appearance::load(&normalized)?;
     crate::appearance::update(&normalized, serde_json::to_value(appearance)?)?;
     crate::onboarding::load(&normalized)?;
@@ -205,11 +206,15 @@ pub async fn restore(state: &Arc<AppState>, bytes: Vec<u8>) -> Result<serde_json
     let input = Sqlite::open_with_flags(&temporary, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let integrity: String = input.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
     let version: i64 = input.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if integrity != "ok" || version != 1 { bail!("备份完整性或数据库版本检查失败，当前知识库未修改"); }
+    if integrity != "ok" || !(1..=2).contains(&version) { bail!("备份完整性或数据库版本检查失败，当前知识库未修改"); }
     normalize_restore(&input, &temporary, &normalized, &namespace)?;
     drop(input);
-    let source = Sqlite::open_with_flags(&normalized, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let source = Sqlite::open(&normalized)?;
     let _maintenance = state.maintenance.write().await;
+    // A backup may contain the same revision as the live library. Assign a new
+    // revision before the atomic copy so open results/scopes are invalidated.
+    let revision = state.store.metadata::<u64>("library_revision")?.unwrap_or(0).saturating_add(1);
+    source.execute("INSERT INTO metadata(key,value) VALUES('library_revision',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[revision.to_string()])?;
     let recovery = export_locked(state)?;
     let recovery_path = state.home.join("backups").join(format!("before-restore-{}.pkb", identifier()));
     private_write(&recovery_path, &recovery)?;
@@ -253,7 +258,7 @@ mod review_tests {
             db.execute_batch("PRAGMA user_version=1; CREATE TABLE unrelated(value TEXT);").unwrap();
         }
         assert!(restore(&state, archive_database(&input)).await.is_err());
-        assert_eq!(state.store.projects().unwrap()[0].id, original.id);
+        assert_eq!(state.store.all_projects().unwrap()[0].id, original.id);
         assert!(!state.store.settings().unwrap().paused);
         assert_eq!(state.store.stats().unwrap()["projects"], 1);
     }
@@ -270,13 +275,14 @@ mod review_tests {
             store.connection.lock().unwrap().execute("INSERT INTO projects(id,path,data) VALUES('bad','/bad','not-json')", []).unwrap();
         }
         assert!(restore(&state, archive_database(&input)).await.is_err());
-        assert_eq!(state.store.projects().unwrap()[0].id, original.id);
+        assert_eq!(state.store.all_projects().unwrap()[0].id, original.id);
     }
 
     #[tokio::test]
     async fn restored_schema_is_canonical_and_input_triggers_and_credentials_are_not_installed() {
         let directory = tempfile::tempdir().unwrap();
         let state = AppState::new(directory.path().join("current"), RuntimeConfig::default()).unwrap();
+        state.store.set_metadata("library_revision", &7u64).unwrap();
         let input = directory.path().join("valid-data.sqlite");
         let project_id;
         {
@@ -285,13 +291,15 @@ mod review_tests {
             settings.chat.has_key = true;
             settings.chat.credential_id = Some("not-a-real-credential".into());
             store.set_metadata("settings", &settings).unwrap();
+            store.set_metadata("library_revision", &7u64).unwrap();
             project_id = store.ensure_project("/restored", "restored-project").unwrap().id;
-            store.save_root(&Root {id:"root".into(),path:"/restored".into(),name:"restored".into(),policy:"agents".into(),enabled:true,exclusions:vec![],created_at:timestamp(),last_scan:None,error:None}).unwrap();
+            store.save_root(&Root {id:"root".into(),path:"/restored".into(),name:"restored".into(),policy:"agents".into(),enabled:true,exclusions:vec![],filters:Default::default(),created_at:timestamp(),last_scan:None,error:None}).unwrap();
             store.connection.lock().unwrap().execute_batch("CREATE TRIGGER unexpected_root_update AFTER UPDATE ON roots BEGIN DELETE FROM projects; END;
                 INSERT INTO connections(id,token_hash,data) VALUES('untrusted','untrusted','not-json');").unwrap();
         }
         restore(&state, archive_database(&input)).await.unwrap();
-        assert_eq!(state.store.projects().unwrap()[0].id, project_id);
+        assert_eq!(state.store.all_projects().unwrap()[0].id, project_id);
+        assert_eq!(state.store.metadata::<u64>("library_revision").unwrap(), Some(8));
         assert!(state.store.roots().unwrap().iter().all(|root| !root.enabled));
         assert!(state.store.connections().unwrap().is_empty());
         assert!(!state.store.settings().unwrap().chat.has_key);

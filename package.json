@@ -1,6 +1,6 @@
 {
   "name": "personal-knowledge",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "本地个人知识库与 MCP 知识服务",
   "author": "Personal Knowledge Contributors",
@@ -24,7 +24,8 @@
     "test:integration": "node --test tests/integration.test.mjs",
     "test:resilience": "node --test tests/mcp-resilience.test.mjs",
     "test:desktop": "node --test tests/desktop-storage.test.mjs",
-    "test:onboarding": "node --test tests/onboarding.test.mjs"
+    "test:onboarding": "node --test tests/onboarding.test.mjs",
+    "test:collections": "node --test tests/collections.test.mjs"
   },
   "dependencies": {
     "@napi-rs/canvas": "1.2.0",

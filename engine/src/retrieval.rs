@@ -15,6 +15,8 @@ pub struct SearchRequest {
     pub query: String,
     /// 可选的项目编号，使用 list_projects 获取
     pub project_id: Option<String>,
+    /// 可选的资料集合编号，list_projects 返回 collection_id
+    pub collection_id: Option<String>,
     /// 返回数量，默认 8，最多 30
     pub limit: Option<usize>,
     /// 文件扩展名，例如 py、pdf 或 xlsx
@@ -41,7 +43,12 @@ pub async fn search(
     if request.query.chars().count() > 4000 {
         bail!("查询内容过长，请缩短问题");
     }
-    let (roots, projects) = state.allowed(scope, request.project_id.as_deref(), false)?;
+    let (mut roots, mut projects) = state.allowed(scope, request.project_id.as_deref(), false)?;
+    if let Some(id) = &request.collection_id {
+        roots.retain(|root|root==id);
+        let members = state.store.projects()?.into_iter().filter(|project|project.root_id.as_ref()==Some(id)).map(|project|project.id).collect::<HashSet<_>>();
+        projects.retain(|project|members.contains(project));
+    }
     if roots.is_empty() || projects.is_empty() {
         return Ok(SearchResponse {
             hits: vec![],
@@ -195,10 +202,11 @@ pub async fn search(
 pub fn projects(state: &AppState, scope: &Scope) -> Result<Vec<Value>> {
     let (roots, allowed) = state.allowed(scope, None, false)?;
     let documents = state.store.documents()?;
+    let collections = state.store.roots()?;
     Ok(state.store.projects()?.into_iter().filter(|project|allowed.contains(&project.id)).map(|project| {
         let count=documents.iter().filter(|document|document.project_id==project.id && roots.contains(&document.root_id)).count();
         let valid=!project.summary_stale && state.valid_evidence(scope,&project.summary_evidence,matches!(scope,Scope::Agent(_)));
-        json!({"id":project.id,"name":project.name,"goal":if valid{&project.goal}else{""},"approach":if valid{&project.approach}else{""},"decisions":if valid{project.decisions.clone()}else{vec![]},"summary_stale":!valid,"documents":count,"updated_at":project.updated_at,"evidence":if valid{project.summary_evidence}else{vec![]}})
+        json!({"id":project.id,"name":project.name,"collection_id":project.root_id,"collection_name":collections.iter().find(|root|Some(&root.id)==project.root_id.as_ref()).map(|root|&root.name),"goal":if valid{&project.goal}else{""},"approach":if valid{&project.approach}else{""},"decisions":if valid{project.decisions.clone()}else{vec![]},"summary_stale":!valid,"documents":count,"updated_at":project.updated_at,"evidence":if valid{project.summary_evidence}else{vec![]}})
     }).collect())
 }
 
@@ -223,15 +231,18 @@ pub async fn context(
         budget -= length;
         true
     });
+    let members = state.store.projects()?.into_iter().filter(|project|request.collection_id.as_ref().is_none_or(|id|project.root_id.as_ref()==Some(id))).map(|project|project.id).collect::<HashSet<_>>();
     let memories = state
         .visible_memories(scope, request.project_id.as_deref())?
         .into_iter()
+        .filter(|memory|request.collection_id.is_none() || memory.project_id.as_ref().is_none_or(|id|members.contains(id)))
         .take(30)
         .collect::<Vec<_>>();
     let mut project_list = projects(state, scope)?;
     if let Some(id) = &request.project_id {
         project_list.retain(|project| project["id"] == *id);
     }
+    if let Some(id) = &request.collection_id { project_list.retain(|project|project["collection_id"]==*id); }
     state.audit(scope, "get_context", search.hits.len());
     Ok(json!({
         "query":request.query,"mode":search.mode,"notice":search.notice,

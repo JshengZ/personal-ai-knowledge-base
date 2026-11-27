@@ -58,3 +58,11 @@ The local post-review UI replaces decorative copy with direct instructions, alig
 独立子智能体发现并复测修复了 3 项 P2：缓存搜索页的项目提问状态不同步；并发设置保存覆盖导览标志（真实引擎修复后 600 轮通过）；640×520、18 px、紧凑模式下正文可被挤至 0 高（现有可读居中降级）。另验证目标缺失／迟到、原设置分类、500 px 滚动、草稿及焦点恢复。没有未关闭的可操作发现；未独立验证屏幕阅读器、Windows GUI 或高倍率缩放。
 
 Sources for interaction patterns: [Fluent onboarding](https://fluent2.microsoft.design/onboarding) and [Atlassian Spotlight](https://atlassian.design/components/spotlight/examples). The implementation uses existing React and native browser primitives; it adds no tour dependency or model call. Screenshots and verification correspond to v1.0.1; release artifacts identify their exact source commit.
+
+## 1.0.2 目录与范围 / Collections and scope
+
+2026-11-27。新增目录批量列表、独立名称、内容类别与规则、跳过原因、文件排除、集合范围和自动共享选择，沿用现有明亮／深色主题、字号、间距与控件。目录添加和管理弹窗采用固定标题与底部操作区，中间独立滚动。
+
+独立子智能体检查 1200×820、640×520，包含批量部分失败重试、集合／项目切换、改名、自动／指定范围回显；提交期间整组表单禁用，避免失败项丢失。实际截图：[批量目录](docs/images/collections-batch.png)、[集合选单](docs/images/collections-scopes.png)、[自动共享](docs/images/collections-sharing.png)。合成资料只用于验收，不生成到用户新库。
+
+New collection controls reuse the established theme and sizing. Long folder forms keep their heading and actions visible while the middle scrolls. Independent acceptance checks constrained windows, partial retry, renamed scopes and saved sharing modes; the whole batch form is disabled during submission.

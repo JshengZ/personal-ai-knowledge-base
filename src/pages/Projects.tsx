@@ -38,17 +38,20 @@ export function Projects() {
   const project = data.projects.find((project) => project.id === projectId);
   if (!project)
     return (
-      <Empty
-        title="暂无项目"
-        action={
-          <button className="primary" onClick={addRoot}>
-            <PlusIcon size={17} />
-            添加资料目录
-          </button>
-        }
-      >
-        添加资料目录后，程序会自动识别项目。
-      </Empty>
+      <>
+        <ArchivedProjects />
+        <Empty
+          title="暂无项目"
+          action={
+            <button className="primary" onClick={addRoot}>
+              <PlusIcon size={17} />
+              添加资料目录
+            </button>
+          }
+        >
+          添加资料目录后，程序会自动识别项目。
+        </Empty>
+      </>
     );
   const documents =
     projectFiles?.id === projectId
@@ -73,6 +76,7 @@ export function Projects() {
   };
   return (
     <>
+      <ArchivedProjects />
       <div className="breadcrumb">
         项目 <span>/</span> <span>{project.name}</span>
       </div>
@@ -311,5 +315,51 @@ function ProjectEditor({
         </p>
       )}
     </Modal>
+  );
+}
+
+function ArchivedProjects() {
+  const { data } = useKnowledge();
+  const [open, setOpen] = useState(false);
+  const projects = data.archived_projects || [];
+  if (!projects.length) return null;
+  return (
+    <>
+      <div className="archive-toolbar">
+        <button className="text-action" onClick={() => setOpen(true)}>
+          已归档项目（{projects.length}）
+        </button>
+      </div>
+      {open && (
+        <Modal title="已归档项目" onClose={() => setOpen(false)}>
+          <p className="muted">
+            保留移除资料集合时的项目记录。归档内容不参与检索或 Agent 共享。
+          </p>
+          {projects.map((project) => (
+            <details className="archived-project" key={project.id}>
+              <summary>{project.name}</summary>
+              <p className="path-text">{project.root_path}</p>
+              {project.goal && (
+                <>
+                  <h3>项目目标</h3>
+                  <p>{project.goal}</p>
+                </>
+              )}
+              {project.approach && (
+                <>
+                  <h3>方案</h3>
+                  <p>{project.approach}</p>
+                </>
+              )}
+              {project.decisions.map((decision, index) => (
+                <p key={index}>
+                  {decision.date} · {decision.text}
+                </p>
+              ))}
+            </details>
+          ))}
+        </Modal>
+      )}
+    </>
   );
 }

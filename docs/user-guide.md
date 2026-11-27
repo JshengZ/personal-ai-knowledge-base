@@ -9,7 +9,7 @@ Download your platform's installer from [GitHub Releases](https://github.com/Jsh
 - **Intel Mac:** open the `.dmg`, drag **个人知识库** to Applications, then launch it. If macOS blocks this unsigned build, use System Settings → Privacy & Security to authorize opening the app. No terminal command is required.
 - **Windows x64:** run the `.exe` wizard, choose the program directory (for example on D:), and install for the current user. It creates a shortcut. The build is unsigned and may display an unknown-publisher prompt. Managed workstations may require your organization's normal software authorization.
 
-The application bundles its runtime, local embedding model, fonts, and OCR languages. There is no project account to register. Native Apple Silicon and ARM Windows installers are not part of v1.0.1.
+The application bundles its runtime, local embedding model, fonts, and OCR languages. There is no project account to register. Native Apple Silicon and ARM Windows installers are not part of v1.0.2.
 
 ## Data location and upgrading
 
@@ -25,7 +25,7 @@ The bootstrap pointer and instance lock remain in the original per-user applicat
 
 By default, at least **5 GB** of free disk space is reserved and live index pages plus the database journal are limited to **10 GB**. SQLite pages freed by deletion are reusable and do not permanently consume this quota. Settings show live quota usage, physical file size, and reusable space separately. Excluded/deleted sources and removed folders are reclaimed in small background batches without deleting originals; already confirmed removals continue while discovery is paused. Database files generally do not shrink immediately after deletion, and actual disk free space remains protected. Migrate to another disk to move that physical occupation. An existing library is never deleted merely for exceeding its limit.
 
-When upgrading from v1.0.0, quit the tray application first. Install v1.0.1, choose/review storage, and start with **Full-text only** while reviewing a large folder. A manually created junction can remain; the engine resolves its physical path. Do not delete SQLite WAL/SHM files as a disk-cleaning shortcut.
+When upgrading from v1.0.0 or v1.0.1, quit the tray application first. Install v1.0.2, choose/review storage, and start with **Full-text only** while reviewing a large folder. A manually created junction can remain; the engine resolves its physical path. Do not delete SQLite WAL/SHM files as a disk-cleaning shortcut.
 
 ## First use and built-in guide
 
@@ -41,11 +41,35 @@ The guide only changes presentation and saves its own progress. New installation
 
 ## First folder
 
-In Sources, click **添加资料目录**, choose a project or document folder with **选择目录**, then **加入知识库**. The app indexes that folder and its descendants. The initial permission allows organization-model and agent use; change it later in **资料 → 资料目录** if needed.
+In Sources, choose **添加资料目录 → 选择目录**. The native dialog supports multiple folders, and repeated selections accumulate folders from different locations. Give each folder its own name and submit. Canceling the picker preserves the current list. Duplicate/overlapping folders show a reason. A partial failure retains only the failed rows for correction and retry; pending submission disables editing so paths and names cannot be lost.
 
-You can add multiple folders. Git working directories and common package/build manifests are recognized as projects. A Git repository remains a unit even when it contains nested packages; unrecognized top-level subfolders become separate collections. Newly indexed/reindexed files use these rules. Existing sources are not all rechunked on upgrade. Review agent project scopes when new projects appear. Overlapping folders are managed through the already-added root. Git internals, dependency directories, build output, and common credential files are excluded by default; add glob exclusions in the folder editor.
+Each selected folder is a **collection**, preserving its chosen name. Git repositories, common package/build manifests and top-level material folders identify projects within it. File and search selectors offer both the whole collection and its individual projects. Renaming updates selectors and existing search hits without recalculating vectors.
 
-The app starts with an empty library. Add your own folders; no sample files are generated.
+Removing a collection immediately removes its scope from selectors, search and MCP. Background batches reclaim its old chunks/vectors; original files remain. User-authored goals, approaches and decisions remain under **项目 → 已归档项目**, outside current retrieval and sharing. Re-adding the same path creates a new collection/project identity without automatically applying archived context.
+
+New installations remain empty. Screenshots below use isolated acceptance fixtures, which are not bundled in installers.
+
+![Batch folders and independent names](images/collections-batch.png)
+
+## Collections and exclusions
+
+Edit rules under **资料 → 资料目录 → 管理目录**, or choose **排除** beside a file to exclude that file, its directory, or its extension. Rules affect the index and preserve originals.
+
+| Priority              | Behavior                                                                                                                                                                                                                                  |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Always skipped        | App data, internal Git/system folders, symlinks/junctions, unsupported formats and non-text binary content. A directly selected linked folder resolves to its physical directory; links inside an associated collection are not followed. |
+| Explicit exclusions   | Relative file/directory paths and glob rules win, including future files under an excluded directory.                                                                                                                                     |
+| Content categories    | Documents/notes, source/configuration and image OCR can be disabled separately.                                                                                                                                                           |
+| Extra included paths  | Relative paths override automatic rules; `.` means the current collection. They do not override explicit exclusions, disabled categories or always-skipped inputs.                                                                        |
+| Automatic recognition | Known dependency/cache/build folders; Nuitka `*.build`, `*.dist`, `*.onefile-build`; generated bundles with combined identifying markers.                                                                                                 |
+
+Sources shows eligible files, skipped files/directories and reasons, with up to 20 example paths. A pruned directory is counted as one directory rather than enumerating its contents. Selecting an output folder directly shows a warning before submission.
+
+To restore an explicitly excluded input, remove its relative-path/glob rule and save. To retain legitimate source under an automatically skipped directory, add its relative path under **额外纳入的路径**. Old excluded text/vectors become unreadable immediately and are reclaimed in background batches, including while discovery is paused.
+
+Recognition uses known names and file markers; it cannot reliably identify every renamed/unknown tool output or infer all user preferences. Review the scope before indexing a broad folder. Dedicated Office parsers continue to accept DOCX/PPTX/XLSX even though those formats internally contain ZIP data.
+
+Upgrade associates legacy projects with their collections while preserving chunks, vectors and client tokens. Existing connections retain selected scopes; switch once to automatic sharing in **编辑权限 → 共享范围** to include future projects. This release advances the database to schema 2; use v1.0.2 or newer after upgrade, and export a backup beforehand.
 
 ## Model settings
 
@@ -74,14 +98,14 @@ The bundled CPU worker submits one chunk at a time, so a slow batch does not dis
 ## Connect an agent
 
 1. Open **Agent 连接 → 添加连接**.
-2. Choose the client and authorized projects. Decide whether it may read confirmed personal memories and submit memory suggestions.
+2. Choose the client. New connections default to all shareable collections and future additions. Select specific projects when required. Personal-memory reading and memory suggestions remain separate permissions.
 3. For ZCode, click **一键配置 ZCode**. Existing settings are preserved and backed up. For nonstandard installations, copy the generated settings into your client instead.
 4. For another client, copy the generated JSON, Codex TOML, or local HTTP settings into its MCP configuration UI.
 5. Start a new conversation. Ask: “What algorithm does my ranking project use? Call the knowledge tools and cite the original sources.”
 
 The **测试共享范围** button checks the knowledge service and permissions. Actual integration still needs a tool call from your client. Suggested usage rules in **接入配置** help an agent use the knowledge base proactively.
 
-For a specific codebase, ask the agent to call `list_projects`, select the correct `project_id`, then use `get_context`/`search` and read returned sources. A flat file list does not flatten stored project/path metadata. Label sources separately in cross-project comparisons.
+`list_projects` includes `collection_id`, `collection_name` and project IDs. Use `collection_id` for a whole collection. For a specific codebase, select the correct `project_id`, then use `get_context`/`search` and read returned sources. A flat file list does not flatten stored project/path metadata. Label sources separately in cross-project comparisons.
 
 Tools: `get_context`, `search`, `read_source`, `list_projects`, `propose_memory`. Proposals require review; they do not directly become confirmed facts.
 
@@ -90,7 +114,7 @@ Tools: `get_context`, `search`, `read_source`, `list_projects`, `propose_memory`
 ## Search, summaries, and memories
 
 - **项目:** review/edit goals, approaches, and decisions; generate an evidence-backed summary using the configured chat API.
-- **搜索与问答:** filter by project or file type. Click a result or citation to read its original page, line, paragraph, slide, or cell range.
+- **搜索与问答:** filter by collection, project or file type. Click a result or citation to read its original page, line, paragraph, slide, or cell range.
 - **关于我:** confirm, correct, dismiss, or delete memory suggestions. When a source changes, dependent confirmed memories become **待复核**.
 
 Role or skill inferences are suggestions supported by sources. They do not train a model or establish a verified job title.
