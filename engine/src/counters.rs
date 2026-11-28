@@ -51,8 +51,8 @@ fn read(db: &Connection) -> Result<HashMap<String, i64>> {
 
 pub fn backfill(store: &Store) -> Result<()> {
     let reader = store.reader_budget(120)?;
-    reader.execute_batch("BEGIN")?;
-    let baseline = read(&reader)?;
+    let snapshot = reader.unchecked_transaction()?;
+    let baseline = read(&snapshot)?;
     if baseline.get("initialized") == Some(&1) {
         return Ok(());
     }
@@ -60,7 +60,7 @@ pub fn backfill(store: &Store) -> Result<()> {
     for table in ["documents", "chunks", "embeddings", "jobs", "projects"] {
         actual.insert(
             table.into(),
-            reader.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            snapshot.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
                 row.get(0)
             })?,
         );
@@ -69,7 +69,7 @@ pub fn backfill(store: &Store) -> Result<()> {
         ("documents", "status", "status:"),
         ("embeddings", "model", "model:"),
     ] {
-        let mut statement = reader.prepare(&format!(
+        let mut statement = snapshot.prepare(&format!(
             "SELECT {column},COUNT(*) FROM {table} GROUP BY {column}"
         ))?;
         for row in statement.query_map([], |row| {
@@ -79,7 +79,7 @@ pub fn backfill(store: &Store) -> Result<()> {
             actual.insert(format!("{prefix}{key}"), count);
         }
     }
-    reader.execute_batch("COMMIT")?;
+    snapshot.commit()?;
     let mut writer = store.connection.lock().unwrap();
     let transaction = writer.transaction()?;
     let initialized: i64 = transaction.query_row(

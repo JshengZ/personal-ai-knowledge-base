@@ -1,6 +1,6 @@
 use crate::{models::Models, store::Store, types::*};
 use anyhow::{bail, Context, Result};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::{
     path::{Path, PathBuf},
     sync::{

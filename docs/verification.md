@@ -9,7 +9,7 @@ Initial verification: **1.0.0, 2026-11-25**. Current verification: **1.1.0, 2026
 
 All fixtures are synthetic and isolated. Local evidence comes from Intel Mac/macOS 14.6.1, not a rerun of the company's complete 34 GB Windows source set.
 
-- 51 Rust regressions passed: 23,000 synthetic metadata rows with complete totals/stable pagination, reserved UI reads during mutation saturation, WAL/FTS reads during writer/normal-query contention, quiet generations, duplicate-chunk recovery and restore invalidation.
+- 54 Rust regressions passed: 23,000 synthetic metadata rows with complete totals/stable pagination, reserved UI reads during mutation saturation, WAL/FTS reads during writer/normal-query contention, quiet generations, duplicate-chunk recovery and restore invalidation.
 - Real cold/concurrent MCP clients and all five tools/protocol versions passed. Contended 14–18 second proposals returned committed records; identical retries reused IDs. Native events handled changes/renames/deletions. Organization-compatible API and full-text integration regressions passed.
 - An independent read-only subagent reproduced and accepted: 3500 repeated chunks restored after partial cleanup; three restores with ten reads each agreeing with disk; reserved FTS in 275 ms while six normal queries were occupied; cancellation freeing capacity in about 2.92 s; stalled-body shutdown in 1.36 s; five quick exits without panic. These are fixture measurements, not general performance guarantees.
 - A desktop flow with 206 actual temporary files covered full pagination, expansion surviving refresh, preserving/retrying a failed IPC read, explicit sharing, direct routing, quiet time and wide/narrow status layouts. Screenshots contain no real personal/company data.
@@ -18,6 +18,8 @@ All fixtures are synthetic and isolated. Local evidence comes from Intel Mac/mac
 ![Runtime status](images/runtime-status.png)
 ![Explicit sharing](images/sharing-choice.png)
 
+
+Independent pressure testing also covered 628 reads on four lanes and 600 policy/name changes during indexing/exclusion/cleanup without a missing collection. A deterministic regression first reproduced the counter early-return snapshot leak, then verified RAII and return-to-pool rollback. SQLite was separately updated to include the upstream WAL-reset fix.
 
 ## 1.0.2 verification (2026-11-27)
 

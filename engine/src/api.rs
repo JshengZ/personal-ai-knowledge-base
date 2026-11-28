@@ -171,7 +171,7 @@ async fn isolate_requests(State(state): State<ApiState>, request: Request, next:
 }
 
 async fn health() -> Json<Value> {
-    Json(json!({"ok":true,"version":env!("CARGO_PKG_VERSION"),"role":"service","pid":std::process::id()}))
+    Json(json!({"ok":true,"version":env!("CARGO_PKG_VERSION"),"role":"service","pid":std::process::id(),"sqlite_version":rusqlite::version()}))
 }
 
 async fn service_status(State(state):State<ApiState>)->ApiResult {

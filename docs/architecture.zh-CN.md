@@ -124,3 +124,5 @@ Schema 3 的持久任务记录 `observed`、`generation` 和可处理时间。�
 在线恢复持有维护写锁，并在复制前后推进只读池 epoch；跨 epoch 迟归还的连接被丢弃。快照和资料列表使用维护读锁，避免恢复后读到旧页或混合元数据。所有后台工作退出后 join，随后释放模型与解析器，再移除服务发现文件。Windows Job Object 持有进程组生命周期；不会把多个有效 stdio 会话误当成孤儿清理。
 
 `diagnostics.rs` 提供独立 `/api/status` 与有界异步审计，记录计算、取消和传输阶段，无法证明客户端确认。`network.rs` 统一固定系统代理、环境代理、bypass 与直连选项；本机通信显式绕过代理。`package.json` 是版本源，版本脚本同步 Rust/锁文件；MCP 使用编译版本，Windows build.rs 写入 PE 产品和文件版本，原生包审计校验。
+
+统计快照用 RAII 事务，提前返回或失败自动回滚。只读连接归池前清除查询取消回调，回滚仍打开的事务；回滚失败丢弃连接，避免旧快照污染后续请求并钉住 WAL。SQLite 已更新至带官方 WAL-reset 修复的版本，单写连接与检查点互斥保留。[上游说明](https://sqlite.org/wal.html#walreset)。

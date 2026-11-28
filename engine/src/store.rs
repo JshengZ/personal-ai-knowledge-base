@@ -26,12 +26,21 @@ pub struct Store {
 
 pub struct ReadConnection<'a> { connection:Option<Sqlite>,pool:&'a Mutex<Vec<Sqlite>>,epoch:u64,current_epoch:&'a AtomicU64 }
 impl std::ops::Deref for ReadConnection<'_> {type Target=Sqlite;fn deref(&self)->&Sqlite {self.connection.as_ref().unwrap()} }
-impl Drop for ReadConnection<'_> {fn drop(&mut self) {let mut pool=self.pool.lock().unwrap();if self.epoch==self.current_epoch.load(Ordering::SeqCst)&&pool.len()<8 {if let Some(connection)=self.connection.take() {pool.push(connection);}}} }
+impl std::ops::DerefMut for ReadConnection<'_> {fn deref_mut(&mut self)->&mut Sqlite {self.connection.as_mut().unwrap()}}
+impl Drop for ReadConnection<'_> {fn drop(&mut self) {
+    let Some(mut connection)=self.connection.take() else {return;};
+    // A cancelled query must not prevent rollback or leave a previous snapshot
+    // pinned in the pool. Future borrowers always start in autocommit mode.
+    if connection.progress_handler(0,None::<fn()->bool>).is_err() {return;}
+    if !connection.is_autocommit() && connection.execute_batch("ROLLBACK").is_err() {return;}
+    let mut pool=self.pool.lock().unwrap();
+    if self.epoch==self.current_epoch.load(Ordering::SeqCst)&&pool.len()<8 {pool.push(connection);}
+} }
 
 impl Drop for Store {fn drop(&mut self) {
     if let Ok(readers)=self.readers.get_mut() {readers.clear();}
     if let Ok(connection)=self.connection.get_mut() {
-        connection.progress_handler(0,None::<fn()->bool>);let _=connection.busy_timeout(Duration::from_millis(100));
+        let _=connection.progress_handler(0,None::<fn()->bool>);let _=connection.busy_timeout(Duration::from_millis(100));
         let _=connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
     }
 }}
@@ -50,7 +59,7 @@ impl Store {
                 sqlite_vec::sqlite3_vec_init as *const (),
             )));
         }
-        let connection = Sqlite::open(path)?;
+        let mut connection = Sqlite::open(path)?;
         let schema: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if schema > 3 {
             bail!("这个知识库由更新版本创建，请使用同版本或更新的应用打开");
@@ -112,7 +121,7 @@ impl Store {
         crate::counters::ensure(&connection, schema == 0)?;
         let cancelled = Arc::new(AtomicBool::new(false));
         let stopping = cancelled.clone();
-        connection.progress_handler(2000, Some(move || stopping.load(Ordering::SeqCst)));
+        connection.progress_handler(2000, Some(move || stopping.load(Ordering::SeqCst)))?;
         let store = Self {
             connection: Mutex::new(connection),
             readers: Mutex::new(Vec::new()),
@@ -160,7 +169,7 @@ impl Store {
 
     pub fn reader_budget(&self, seconds: u64) -> Result<ReadConnection<'_>> {
         let (pooled,epoch)={let mut pool=self.readers.lock().unwrap();(pool.pop(),self.reader_epoch.load(Ordering::SeqCst))};
-        let db=if let Some(db)=pooled {db} else {
+        let mut db=if let Some(db)=pooled {db} else {
             let db=Sqlite::open_with_flags(&self.path,rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
             db.busy_timeout(Duration::from_millis(100))?;db.execute_batch("PRAGMA query_only=ON; PRAGMA cache_size=-8192;")?;db
         };
@@ -172,7 +181,7 @@ impl Store {
             Some(move || {
                 stopping.load(Ordering::SeqCst) || start.elapsed() > Duration::from_secs(seconds) || query.as_ref().is_some_and(|query|query.expired())
             }),
-        );
+        )?;
         Ok(ReadConnection{connection:Some(db),pool:&self.readers,epoch,current_epoch:&self.reader_epoch})
     }
 

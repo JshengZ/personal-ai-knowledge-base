@@ -2469,15 +2469,6 @@
     },
     {
       "name": "foldhash",
-      "version": "0.1.5",
-      "license": "Zlib",
-      "repository": "https://github.com/orlp/foldhash",
-      "files": [
-        "LICENSE"
-      ]
-    },
-    {
-      "name": "foldhash",
       "version": "0.2.0",
       "license": "Zlib",
       "repository": "https://github.com/orlp/foldhash",
@@ -2627,16 +2618,6 @@
     },
     {
       "name": "hashbrown",
-      "version": "0.15.5",
-      "license": "MIT OR Apache-2.0",
-      "repository": "https://github.com/rust-lang/hashbrown",
-      "files": [
-        "LICENSE-APACHE",
-        "LICENSE-MIT"
-      ]
-    },
-    {
-      "name": "hashbrown",
       "version": "0.16.1",
       "license": "MIT OR Apache-2.0",
       "repository": "https://github.com/rust-lang/hashbrown",
@@ -2657,9 +2638,9 @@
     },
     {
       "name": "hashlink",
-      "version": "0.10.0",
+      "version": "0.12.2",
       "license": "MIT OR Apache-2.0",
-      "repository": "https://github.com/kyren/hashlink",
+      "repository": "https://github.com/djc/hashlink",
       "files": [
         "LICENSE-APACHE",
         "LICENSE-MIT"
@@ -3018,7 +2999,7 @@
     },
     {
       "name": "libsqlite3-sys",
-      "version": "0.35.0",
+      "version": "0.39.1",
       "license": "MIT",
       "repository": "https://github.com/rusqlite/rusqlite",
       "files": [
@@ -3535,7 +3516,7 @@
     },
     {
       "name": "rusqlite",
-      "version": "0.37.0",
+      "version": "0.41.0",
       "license": "MIT",
       "repository": "https://github.com/rusqlite/rusqlite",
       "files": [

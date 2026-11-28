@@ -389,6 +389,70 @@ test(
 );
 
 test(
+  "concurrent state readers see committed collections through repeated policy changes",
+  { timeout: 60000 },
+  async () => {
+    const f = await fixture();
+    let stop = false;
+    const errors = [];
+    let readers = [];
+    try {
+      await f.start();
+      await f.api("PATCH", "/settings", {
+        embedding_mode: "disabled",
+        auto_summarize: false,
+      });
+      await writeFile(
+        join(f.sources, "evidence.md"),
+        "CONCURRENT_COLLECTION_NEEDLE",
+      );
+      const root = await f.api("POST", "/roots", {
+        path: f.sources,
+        policy: "agents",
+      });
+      await until(async () => {
+        const state = await f.api("GET", "/state");
+        return state.documents[0]?.status === "ready";
+      }, "initial collection is ready");
+      readers = Array.from({ length: 4 }, async () => {
+        while (!stop) {
+          try {
+            const state = await f.api("GET", "/state");
+            assert.ok(
+              state.roots.some((item) => item.id === root.id),
+              "an existing collection must not vanish from a pooled snapshot",
+            );
+          } catch (error) {
+            errors.push(error.message);
+          }
+          await delay(5);
+        }
+      });
+      for (let index = 0; index < 40; index++) {
+        const updated = await f.api("PATCH", "/roots/" + root.id, {
+          name: "Collection " + index,
+          policy: index % 2 ? "agents" : "local",
+        });
+        assert.equal(updated.id, root.id);
+      }
+      stop = true;
+      await Promise.all(readers);
+      const state = await f.api("GET", "/state");
+      assert.equal(
+        state.roots.find((item) => item.id === root.id).name,
+        "Collection 39",
+      );
+      assert.equal(state.stats.ready, 1);
+      assert.deepEqual(errors, []);
+    } finally {
+      stop = true;
+      await Promise.allSettled(readers);
+      await f.clean();
+    }
+  },
+);
+
+test(
   "native changes wait for quiet time, coalesce bursts and update without a full-directory rescan",
   { timeout: 60000 },
   async () => {

@@ -75,6 +75,38 @@ fn fixture() -> (
     (directory, state, root, project, document, chunk)
 }
 
+#[test]
+fn an_initialized_counter_backfill_cannot_leave_a_stale_snapshot_in_the_read_pool() {
+    let (_directory,state,root,_project,_document,_chunk)=fixture();
+    crate::counters::backfill(&state.store).unwrap();
+    let mut added=root.clone();added.id=identifier();added.path.push_str("-new");
+    state.store.save_root(&added).unwrap();
+    assert_eq!(state.store.root(&added.id).expect("committed collections must be visible after backfill").id,added.id);
+    assert_eq!(state.store.roots().unwrap().len(),2);
+}
+
+#[test]
+fn bundled_sqlite_includes_the_upstream_wal_reset_fix() {
+    assert!(rusqlite::version_number()>=3_051_003,"SQLite {} predates the WAL reset fix",rusqlite::version());
+}
+
+#[test]
+fn returning_an_unfinished_or_cancelled_reader_releases_its_snapshot() {
+    let (_directory,state,root,_project,_document,_chunk)=fixture();
+    {
+        let mut reader=state.store.reader_budget(2).unwrap();
+        reader.execute_batch("BEGIN").unwrap();
+        assert_eq!(reader.query_row("SELECT count(*) FROM roots",[],|row|row.get::<_,i64>(0)).unwrap(),1);
+        reader.progress_handler(1,Some(||true)).unwrap();
+        // Simulate an early error/cancellation before COMMIT or ROLLBACK.
+    }
+    let mut added=root.clone();added.id=identifier();added.path.push_str("-after-cancel");
+    state.store.save_root(&added).unwrap();
+    assert_eq!(state.store.roots().unwrap().len(),2);
+    assert!(state.store.reader_budget(2).unwrap().is_autocommit());
+    assert!(state.store.try_checkpoint().unwrap(),"an abandoned pooled snapshot must not pin the WAL");
+}
+
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 async fn queries_use_wal_readers_and_reserved_fts_when_writes_and_semantic_lanes_are_busy() {
     let (_directory,state,_root,_project,_document,_chunk)=fixture();
