@@ -56,7 +56,7 @@ pub fn create(state: &AppState, input: Value) -> Result<Value> {
         kind: input["kind"].as_str().unwrap_or("zcode").into(),
         enabled: true,
         project_ids: ids,
-        scope_mode: input["scope_mode"].as_str().unwrap_or(if input.get("project_ids").is_some() { "selected" } else { "all" }).into(),
+        scope_mode: input["scope_mode"].as_str().unwrap_or("selected").into(),
         include_profile: input["include_profile"].as_bool().unwrap_or(false),
         can_propose: input["can_propose"].as_bool().unwrap_or(false),
         created_at: timestamp(),
@@ -87,7 +87,7 @@ pub fn config(state: &AppState, id: &str) -> Result<Value> {
     } else {
         std::env::current_exe()?
     };
-    let server = json!({"command":executable,"args":["mcp","--home",state.home,"--connection",id],"env":{"PKB_CONNECTION_TOKEN":secret}});
+    let server = json!({"command":executable,"args":["mcp","--role","mcp-stdio","--home",state.home,"--connection",id],"env":{"PKB_CONNECTION_TOKEN":secret}});
     let name = format!("personal-knowledge-{}", &id[..8]);
     let port = state.store.metadata::<u16>("http_port")?.unwrap_or(17481);
     Ok(
@@ -98,6 +98,7 @@ pub fn config(state: &AppState, id: &str) -> Result<Value> {
 }
 
 pub fn update(state: &AppState, id: &str, input: Value) -> Result<Connection> {
+    let _library=state.library_lock.lock().unwrap();
     let mut client = state.store.client(id)?;
     if let Some(name) = input["name"].as_str() {
         if name.trim().is_empty() {

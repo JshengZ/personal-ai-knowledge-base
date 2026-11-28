@@ -8,7 +8,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, RwLock,
     },
     time::{Duration, Instant},
@@ -16,11 +16,25 @@ use std::{
 
 pub struct Store {
     pub connection: Mutex<Sqlite>,
+    readers: Mutex<Vec<Sqlite>>,
+    reader_epoch: AtomicU64,
     tokenizer: Jieba,
     path: PathBuf,
     clients: RwLock<HashMap<String, (String, Connection)>>,
     pub cancelled: Arc<AtomicBool>,
 }
+
+pub struct ReadConnection<'a> { connection:Option<Sqlite>,pool:&'a Mutex<Vec<Sqlite>>,epoch:u64,current_epoch:&'a AtomicU64 }
+impl std::ops::Deref for ReadConnection<'_> {type Target=Sqlite;fn deref(&self)->&Sqlite {self.connection.as_ref().unwrap()} }
+impl Drop for ReadConnection<'_> {fn drop(&mut self) {let mut pool=self.pool.lock().unwrap();if self.epoch==self.current_epoch.load(Ordering::SeqCst)&&pool.len()<8 {if let Some(connection)=self.connection.take() {pool.push(connection);}}} }
+
+impl Drop for Store {fn drop(&mut self) {
+    if let Ok(readers)=self.readers.get_mut() {readers.clear();}
+    if let Ok(connection)=self.connection.get_mut() {
+        connection.progress_handler(0,None::<fn()->bool>);let _=connection.busy_timeout(Duration::from_millis(100));
+        let _=connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    }
+}}
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
@@ -38,7 +52,7 @@ impl Store {
         }
         let connection = Sqlite::open(path)?;
         let schema: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if schema > 2 {
+        if schema > 3 {
             bail!("这个知识库由更新版本创建，请使用同版本或更新的应用打开");
         }
         connection.busy_timeout(Duration::from_secs(10))?;
@@ -88,14 +102,21 @@ impl Store {
                  id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
                  kind TEXT NOT NULL, message TEXT NOT NULL, details TEXT NOT NULL
              );
-             PRAGMA user_version=2;",
+             PRAGMA user_version=3;",
         )?;
+        for (name,definition) in [("observed","TEXT NOT NULL DEFAULT ''"),("generation","INTEGER NOT NULL DEFAULT 1")] {
+            let exists:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('jobs') WHERE name=?1)",[name],|row|row.get(0))?;
+            if !exists {connection.execute_batch(&format!("ALTER TABLE jobs ADD COLUMN {name} {definition}"))?;}
+        }
+        connection.execute_batch("CREATE TRIGGER IF NOT EXISTS chunks_update AFTER UPDATE OF lexical ON chunks WHEN old.lexical!=new.lexical BEGIN DELETE FROM chunk_fts WHERE rowid=old.rowid AND chunk_id=old.id; INSERT INTO chunk_fts(rowid,chunk_id,tokens) VALUES(new.rowid,new.id,new.lexical); END;")?;
         crate::counters::ensure(&connection, schema == 0)?;
         let cancelled = Arc::new(AtomicBool::new(false));
         let stopping = cancelled.clone();
         connection.progress_handler(2000, Some(move || stopping.load(Ordering::SeqCst)));
         let store = Self {
             connection: Mutex::new(connection),
+            readers: Mutex::new(Vec::new()),
+            reader_epoch: AtomicU64::new(0),
             tokenizer: Jieba::new(),
             path: path.to_path_buf(),
             clients: RwLock::new(HashMap::new()),
@@ -133,23 +154,32 @@ impl Store {
         Ok(())
     }
 
-    fn reader(&self) -> Result<Sqlite> {
+    fn reader(&self) -> Result<ReadConnection<'_>> {
         self.reader_budget(2)
     }
 
-    pub fn reader_budget(&self, seconds: u64) -> Result<Sqlite> {
-        let db = Sqlite::open_with_flags(&self.path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        db.busy_timeout(Duration::from_millis(100))?;
-        db.execute_batch("PRAGMA query_only=ON; PRAGMA cache_size=-8192;")?;
+    pub fn reader_budget(&self, seconds: u64) -> Result<ReadConnection<'_>> {
+        let (pooled,epoch)={let mut pool=self.readers.lock().unwrap();(pool.pop(),self.reader_epoch.load(Ordering::SeqCst))};
+        let db=if let Some(db)=pooled {db} else {
+            let db=Sqlite::open_with_flags(&self.path,rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            db.busy_timeout(Duration::from_millis(100))?;db.execute_batch("PRAGMA query_only=ON; PRAGMA cache_size=-8192;")?;db
+        };
         let start = Instant::now();
         let stopping = self.cancelled.clone();
+        let query=crate::queries::current();
         db.progress_handler(
             2000,
             Some(move || {
-                stopping.load(Ordering::SeqCst) || start.elapsed() > Duration::from_secs(seconds)
+                stopping.load(Ordering::SeqCst) || start.elapsed() > Duration::from_secs(seconds) || query.as_ref().is_some_and(|query|query.expired())
             }),
         );
-        Ok(db)
+        Ok(ReadConnection{connection:Some(db),pool:&self.readers,epoch,current_epoch:&self.reader_epoch})
+    }
+
+    pub fn invalidate_readers(&self) {
+        let mut pool=self.readers.lock().unwrap();
+        self.reader_epoch.fetch_add(1,Ordering::SeqCst);
+        pool.clear();
     }
 
     pub fn recent_documents(&self, limit: usize) -> Result<Vec<Document>> {
@@ -170,7 +200,7 @@ impl Store {
     }
 
     pub fn metadata<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
-        let db = self.connection.lock().unwrap();
+        let db = self.reader()?;
         let value: Option<String> = db
             .query_row("SELECT value FROM metadata WHERE key=?1", [key], |row| {
                 row.get(0)
@@ -222,7 +252,7 @@ impl Store {
     }
 
     fn list_json<T: DeserializeOwned>(&self, table: &str) -> Result<Vec<T>> {
-        let db = self.connection.lock().unwrap();
+        let db = self.reader()?;
         let mut statement = db.prepare(&format!("SELECT data FROM {table} ORDER BY rowid"))?;
         let values = statement
             .query_map([], |row| row.get::<_, String>(0))?
@@ -255,17 +285,8 @@ impl Store {
     }
 
     fn get_json<T: DeserializeOwned>(&self, table: &str, id: &str) -> Result<T> {
-        let text: String = self
-            .connection
-            .lock()
-            .unwrap()
-            .query_row(
-                &format!("SELECT data FROM {table} WHERE id=?1"),
-                [id],
-                |row| row.get(0),
-            )
-            .optional()?
-            .context("记录不存在或已移除")?;
+        let db=self.reader()?;
+        let text:String=db.query_row(&format!("SELECT data FROM {table} WHERE id=?1"),[id],|row|row.get(0)).optional()?.context("记录不存在或已移除")?;
         Ok(serde_json::from_str(&text)?)
     }
 
@@ -324,10 +345,7 @@ impl Store {
     }
 
     pub fn document_by_path(&self, path: &str) -> Result<Option<Document>> {
-        let text: Option<String> = self
-            .connection
-            .lock()
-            .unwrap()
+        let text: Option<String> = self.reader()?
             .query_row("SELECT data FROM documents WHERE path=?1", [path], |row| {
                 row.get(0)
             })
@@ -340,6 +358,11 @@ impl Store {
         self.list_json("documents")
     }
 
+    pub fn documents_under(&self,root_id:&str,path:&str)->Result<Vec<Document>> {
+        let db=self.reader()?;let mut statement=db.prepare("SELECT data FROM documents WHERE root_id=?1 AND (path=?2 OR substr(path,1,length(?2)+1)=?2||'/' OR substr(path,1,length(?2)+1)=?2||char(92))")?;
+        let records=statement.query_map(params![root_id,path],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        records.into_iter().map(|text|serde_json::from_str(&text).map_err(Into::into)).collect()
+    }
     pub fn save_document(&self, document: &Document) -> Result<()> {
         self.connection.lock().unwrap().execute(
             "INSERT INTO documents(id,path,root_id,project_id,version,status,data) VALUES(?1,?2,?3,?4,?5,?6,?7)
@@ -389,14 +412,16 @@ impl Store {
     // recheck ownership and filters immediately before committing this write.
     pub fn replace_document_prepared(&self, document: &Document, chunks: &[Chunk], lexical: &[String]) -> Result<()> {
         if chunks.len() != lexical.len() { bail!("分词结果与文档片段数量不一致"); }
+        if chunks.iter().map(|chunk|&chunk.id).collect::<HashSet<_>>().len()!=chunks.len() || chunks.iter().any(|chunk|chunk.document_id!=document.id) {bail!("文档片段标识重复或归属错误，已取消本次写入");}
         let mut db = self.connection.lock().unwrap();
         let transaction = db.transaction()?;
         transaction.execute(
             "INSERT INTO documents(id,path,root_id,project_id,version,status,data) VALUES(?1,?2,?3,?4,?5,?6,?7)
-             ON CONFLICT(id) DO UPDATE SET root_id=excluded.root_id,project_id=excluded.project_id,version=excluded.version,status=excluded.status,data=excluded.data",
+             ON CONFLICT(id) DO UPDATE SET path=excluded.path,root_id=excluded.root_id,project_id=excluded.project_id,version=excluded.version,status=excluded.status,data=excluded.data",
             params![document.id,document.path,document.root_id,document.project_id,document.version,document.status,serde_json::to_string(document)?],
         )?;
-        transaction.execute("DELETE FROM chunks WHERE document_id=?1", [&document.id])?;
+        let ids=chunks.iter().map(|chunk|&chunk.id).collect::<Vec<_>>();
+        transaction.execute("DELETE FROM chunks WHERE document_id=?1 AND id NOT IN (SELECT value FROM json_each(?2))",params![document.id,serde_json::to_string(&ids)?])?;
         let maximum: i64 =
             transaction.query_row("SELECT COALESCE(MAX(rowid),0) FROM chunks", [], |row| {
                 row.get(0)
@@ -417,8 +442,9 @@ impl Store {
                 bail!("索引已停止");
             }
             rowid += 1;
-            transaction.execute("INSERT INTO chunks(rowid,id,document_id,ordinal,text,location,lexical) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            let written=transaction.execute("INSERT INTO chunks(rowid,id,document_id,ordinal,text,location,lexical) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(id) DO UPDATE SET ordinal=excluded.ordinal,location=excluded.location,lexical=excluded.lexical WHERE chunks.document_id=excluded.document_id AND chunks.text=excluded.text",
                 params![rowid,chunk.id,chunk.document_id,chunk.ordinal,chunk.text,serde_json::to_string(&chunk.location)?,terms])?;
+            if written!=1 {bail!("片段标识与已有内容冲突，已取消本次写入");}
         }
         transaction.execute("INSERT INTO metadata(key,value) VALUES('chunk_high_water',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [rowid.to_string()])?;
         // A re-index (possibly under a newly added root) supersedes an older
@@ -434,7 +460,7 @@ impl Store {
     }
 
     pub fn chunks(&self, document_id: &str) -> Result<Vec<Chunk>> {
-        let db = self.connection.lock().unwrap();
+        let db = self.reader()?;
         let mut statement = db.prepare(
             "SELECT id,ordinal,text,location FROM chunks WHERE document_id=?1 ORDER BY ordinal",
         )?;
@@ -633,11 +659,9 @@ impl Store {
         Ok(())
     }
 
-    pub fn save_memory(&self, memory: &Memory) -> Result<()> {
-        self.connection.lock().unwrap().execute(
-            "INSERT INTO memories(id,data) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
-            params![memory.id,serde_json::to_string(memory)?],
-        )?;
+    pub fn save_memory(&self, memory:&Memory)->Result<()> {
+        let db=self.connection.lock().unwrap();crate::queries::check()?;
+        db.execute("INSERT INTO memories(id,data) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",params![memory.id,serde_json::to_string(memory)?])?;
         Ok(())
     }
 
@@ -849,7 +873,7 @@ impl Store {
     }
 
     pub fn hit(&self, chunk_id: &str) -> Result<SearchHit> {
-        let db = self.connection.lock().unwrap();
+        let db = self.reader()?;
         let record: (String,String,String,String,String,Option<String>) = db.query_row(
             "SELECT c.id,c.text,c.location,d.data,p.data,r.data FROM chunks c JOIN documents d ON d.id=c.document_id JOIN projects p ON p.id=d.project_id LEFT JOIN roots r ON r.id=d.root_id WHERE c.id=?1",
             [chunk_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)),
@@ -874,20 +898,31 @@ impl Store {
         })
     }
 
-    pub fn enqueue(&self, path: &str, root_id: &str, force: bool) -> Result<()> {
-        self.connection.lock().unwrap().execute(
-            "INSERT INTO jobs(path,root_id,force) VALUES(?1,?2,?3)
-             ON CONFLICT(path) DO UPDATE SET force=MAX(jobs.force,excluded.force),root_id=excluded.root_id,available_at=0,attempts=0",
-            params![path,root_id,force],
-        )?;
-        Ok(())
+    pub fn enqueue(&self,path:&str,root_id:&str,force:bool)->Result<()> {
+        self.enqueue_observed(path,root_id,force,"",0)?;Ok(())
     }
-
-    pub fn next_job(&self) -> Result<Option<(String, String, bool, usize)>> {
-        Ok(self.connection.lock().unwrap().query_row(
-            "SELECT path,root_id,force,attempts FROM jobs WHERE available_at<=unixepoch() ORDER BY rowid LIMIT 1", [],
-            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
-        ).optional()?)
+    pub fn enqueue_observed(&self,path:&str,root_id:&str,force:bool,observed:&str,quiet:u64)->Result<bool> {
+        Ok(self.connection.lock().unwrap().execute("INSERT INTO jobs(path,root_id,force,observed,available_at,generation) VALUES(?1,?2,?3,?4,unixepoch()+?5,1)
+            ON CONFLICT(path) DO UPDATE SET root_id=excluded.root_id,force=MAX(jobs.force,excluded.force),observed=excluded.observed,available_at=excluded.available_at,attempts=0,generation=jobs.generation+1
+            WHERE jobs.root_id!=excluded.root_id OR jobs.observed!=excluded.observed OR excluded.force=1",params![path,root_id,force,observed,quiet])?>0)
+    }
+    pub fn next_job(&self)->Result<Option<(String,String,bool,usize)>> {
+        Ok(self.next_job_generation()?.map(|(path,root,force,attempts,_)|(path,root,force,attempts)))
+    }
+    pub fn next_job_generation(&self)->Result<Option<(String,String,bool,usize,i64)>> {
+        Ok(self.connection.lock().unwrap().query_row("SELECT path,root_id,force,attempts,generation FROM jobs WHERE available_at<=unixepoch() ORDER BY available_at,rowid LIMIT 1",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).optional()?)
+    }
+    pub fn finish_generation(&self,path:&str,root_id:&str,generation:i64)->Result<()> {
+        self.connection.lock().unwrap().execute("DELETE FROM jobs WHERE path=?1 AND root_id=?2 AND generation=?3",params![path,root_id,generation])?;Ok(())
+    }
+    pub fn retry_generation(&self,path:&str,generation:i64,attempts:usize)->Result<()> {
+        let delay=(5_i64*2_i64.pow(attempts.min(9) as u32)).min(3600);
+        self.connection.lock().unwrap().execute("UPDATE jobs SET attempts=?3,available_at=unixepoch()+?4 WHERE path=?1 AND generation=?2",params![path,generation,attempts+1,delay])?;Ok(())
+    }
+    pub fn job_status(&self)->Result<Value> {
+        let db=self.reader()?;
+        let (queued,waiting,earliest):(u64,u64,Option<i64>)=db.query_row("SELECT count(*),COALESCE(sum(available_at>unixepoch()),0),min(CASE WHEN available_at>unixepoch() THEN available_at END) FROM jobs",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
+        Ok(json!({"queued":queued,"waiting":waiting,"ready":queued-waiting,"next_due_at":earliest}))
     }
 
     pub fn finish_root_job(&self, path: &str, root_id: &str) -> Result<()> {
@@ -918,8 +953,17 @@ impl Store {
         Ok(())
     }
 
+    pub fn try_audit(&self, event:&crate::diagnostics::Audit) -> Result<bool> {
+        let Ok(db)=self.connection.try_lock() else { return Ok(false); };
+        let message=match event.phase { "computed"=>"MCP 计算完成，响应送达状态见传输记录", "transport_complete"=>"MCP 响应已交给传输层，客户端确认未知", "transport_interrupted"=>"MCP 连接中断，响应送达未知", "cancelled"=>"MCP 计算已取消", _=>"MCP 请求未完成" };
+        db.execute("INSERT INTO events(created_at,kind,message,details) VALUES(?1,'mcp',?2,?3)",params![timestamp(),message,json!({"connection_id":event.client_id,"tool":event.tool,"request_id":event.request_id,"phase":event.phase,"results":event.count,"elapsed_ms":event.elapsed_ms,"mode":event.mode,"error_code":event.error_code,"client_acknowledged":null}).to_string()])?;
+        if event.phase=="computed" { db.execute("UPDATE connections SET data=json_set(data,'$.last_used',?2) WHERE id=?1",params![event.client_id,timestamp()])?; }
+        db.execute("DELETE FROM events WHERE id < (SELECT COALESCE(MAX(id),0)-2000 FROM events)",[])?;
+        Ok(true)
+    }
+
     pub fn events(&self, limit: usize) -> Result<Vec<Event>> {
-        let db = self.connection.lock().unwrap();
+        let db = self.reader()?;
         let mut statement = db.prepare(
             "SELECT id,created_at,kind,message,details FROM events ORDER BY id DESC LIMIT ?1",
         )?;

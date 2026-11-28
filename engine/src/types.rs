@@ -174,6 +174,7 @@ pub struct Provider {
     pub credential_id: Option<String>,
     #[serde(default)]
     pub endpoint: String,
+    pub proxy_mode: String,
 }
 
 impl Default for Provider {
@@ -185,6 +186,7 @@ impl Default for Provider {
             has_key: false,
             credential_id: None,
             endpoint: String::new(),
+            proxy_mode: "system".into(),
         }
     }
 }
@@ -205,6 +207,7 @@ pub struct Settings {
     pub paused: bool,
     pub max_file_mb: u64,
     pub reconcile_seconds: u64,
+    pub file_quiet_seconds: u64,
     pub min_free_disk_gb: u64,
     pub max_index_gb: u64,
     pub indexing_profile: String,
@@ -215,7 +218,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            schema_version: 1,
+            schema_version: 2,
             organization: String::new(),
             chat: Provider::default(),
             embedding: Provider::default(),
@@ -227,7 +230,8 @@ impl Default for Settings {
             onboarding_complete: false,
             paused: false,
             max_file_mb: 32,
-            reconcile_seconds: 300,
+            reconcile_seconds: 3600,
+            file_quiet_seconds: 300,
             min_free_disk_gb: 5,
             max_index_gb: 10,
             indexing_profile: "balanced".into(),
@@ -236,6 +240,8 @@ impl Default for Settings {
         }
     }
 }
+
+impl Settings {pub fn migrate_policy(&mut self)->bool {if self.schema_version>=2 {return false;}self.schema_version=2;if self.reconcile_seconds==300 {self.reconcile_seconds=3600;}true}}
 
 #[derive(Clone, Serialize, Deserialize, Debug, Default)]
 #[serde(default)]

@@ -2,7 +2,7 @@ use crate::{backup, connections, indexer, knowledge, retrieval, state::AppState,
 use anyhow::{Context, Result};
 use axum::{
     body::Bytes,
-    extract::{DefaultBodyLimit, Path, Query, Request, State},
+    extract::{DefaultBodyLimit, Path, Query, Request, State, Extension},
     http::{HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -26,11 +26,8 @@ impl<E: Into<anyhow::Error>> From<E> for ApiError {
 }
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error":crate::storage::error_message(&self.0)})),
-        )
-            .into_response()
+        let error=crate::errors::describe(&self.0);
+        (error.status,Json(error.value())).into_response()
     }
 }
 type ApiResult = std::result::Result<Json<Value>, ApiError>;
@@ -83,6 +80,7 @@ pub fn router(app: Arc<AppState>, token: String, port: u16) -> Router {
     let state = ApiState { app, token, port };
     let owner = Router::new()
         .route("/health", get(health))
+        .route("/status", get(service_status))
         .route("/state", get(snapshot))
         .route("/documents", get(documents))
         .route("/roots", post(add_root))
@@ -121,6 +119,7 @@ pub fn router(app: Arc<AppState>, token: String, port: u16) -> Router {
             state.clone(),
             isolate_requests,
         ))
+        .layer(middleware::from_fn(crate::queries::track))
         .with_state(state)
 }
 
@@ -131,6 +130,9 @@ async fn isolate_requests(State(state): State<ApiState>, request: Request, next:
     if path == "/api/health"
         || path == "/api/shutdown"
         || path.starts_with("/mcp/")
+        || path.starts_with("/agent/")
+        || path=="/api/status"
+        || path=="/api/search"
         || !path.starts_with("/api/") && !path.starts_with("/agent/")
     {
         return next.run(request).await;
@@ -143,8 +145,9 @@ async fn isolate_requests(State(state): State<ApiState>, request: Request, next:
         && path != "/api/backups/export")
         || path == "/api/search"
         || (path.starts_with("/agent/") && !path.ends_with("/propose_memory"));
-    let Ok(permit) = state.app.requests.clone().try_acquire_owned() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"知识服务正在处理其他请求，请稍后重试。索引可在资料页暂停。","code":"busy"}))).into_response();
+    let lanes=if short_read {state.app.read_requests.clone()}else{state.app.requests.clone()};
+    let Ok(permit) = lanes.try_acquire_owned() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"同时处理的界面请求已达上限，请稍后重试。","code":"ui_request_capacity"}))).into_response();
     };
     let handle = tokio::runtime::Handle::current();
     let work = tokio::task::spawn_blocking(move || {
@@ -162,16 +165,28 @@ async fn isolate_requests(State(state): State<ApiState>, request: Request, next:
     }
     match tokio::time::timeout(std::time::Duration::from_secs(12), work).await {
         Ok(Ok(response)) => response,
-        _ => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"知识服务忙碌，本次请求已超时。请暂停索引或稍后重试。","code":"busy"}))).into_response(),
+        Ok(Err(error))=>{tracing::error!(%error,"read worker failed");(StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":"读取请求未能完成，请查看处理记录。","code":"read_worker_failed"}))).into_response()},
+        Err(_) => (StatusCode::GATEWAY_TIMEOUT, Json(json!({"error":"读取资料超过执行时限，请重试或查看运行状态。","code":"ui_read_timeout","details":{"deadline_seconds":12}}))).into_response(),
     }
 }
 
 async fn health() -> Json<Value> {
-    Json(json!({"ok":true,"version":env!("CARGO_PKG_VERSION")}))
+    Json(json!({"ok":true,"version":env!("CARGO_PKG_VERSION"),"role":"service","pid":std::process::id()}))
+}
+
+async fn service_status(State(state):State<ApiState>)->ApiResult {
+    let app=state.app.clone();
+    let mut status=app.diagnostics.snapshot();
+    status["queries"]=json!({"active":6-app.query_lanes.available_permits(),"capacity":6,"keyword_active":2-app.keyword_lanes.available_permits(),"keyword_capacity":2,"deadline_seconds":crate::queries::QUERY_SECONDS,"bridge_deadline_seconds":crate::queries::BRIDGE_SECONDS});
+    status["maintenance"]=json!(app.maintenance.try_read().is_err());
+    let metrics=tokio::task::spawn_blocking(move||->Result<Value> {let settings=app.store.settings()?;Ok(json!({"queue":app.store.job_status()?,"semantic":crate::progress::snapshot(&app,&settings)?,"paused":settings.paused,"quiet_seconds":settings.file_quiet_seconds,"reconcile_seconds":settings.reconcile_seconds}))}).await?;
+    match metrics {Ok(metrics)=>status["index"]=metrics,Err(error)=>status["index_error"]=json!(error.to_string())};
+    Ok(Json(status))
 }
 
 async fn snapshot(State(state): State<ApiState>) -> ApiResult {
     let app = &state.app;
+    let _maintenance=app.maintenance.read().await;
     let mut documents = app.store.recent_documents(100)?;
     documents.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     let settings = app.store.settings()?;
@@ -195,9 +210,12 @@ async fn snapshot(State(state): State<ApiState>) -> ApiResult {
     }
     stats["discovered"] = json!(discovered
         .max(stats["documents"].as_u64().unwrap_or(0) + stats["pending"].as_u64().unwrap_or(0)));
+    let visible_roots=app.store.roots()?;
+    let visible_rules=visible_roots.iter().filter_map(|root|crate::rules::Rules::new(root,&app.home,&app.runtime.resources).ok().map(|rules|(root.id.clone(),rules))).collect::<HashMap<_,_>>();
+    let documents=documents.into_iter().filter(|document|document.status!="removing"&&visible_rules.get(&document.root_id).is_some_and(|rules|rules.skip_indexed(std::path::Path::new(&document.path)).is_none())).take(100).collect::<Vec<_>>();
     Ok(Json(
         json!({"version":env!("CARGO_PKG_VERSION"),"roots":app.store.roots()?,"projects":app.store.projects()?,"archived_projects":app.store.all_projects()?.into_iter().filter(|project|project.archived).collect::<Vec<_>>(),"library_revision":app.store.metadata::<u64>("library_revision")?.unwrap_or(0),"scan_summaries":app.store.roots()?.iter().map(|root| Ok(json!({"root_id":root.id,"summary":app.store.metadata::<Value>(&format!("scan_summary:{}",root.id))?}))).collect::<Result<Vec<_>>>()?,
-        "documents":documents.into_iter().filter(|document| document.status != "removing" && app.store.root(&document.root_id).is_ok_and(|root|crate::indexer::eligible(std::path::Path::new(&document.path),&root,app).unwrap_or(false))).take(100).collect::<Vec<_>>(),"memories":app.store.memories()?,
+        "documents":documents,"memories":app.store.memories()?,
         "connections":app.store.connections()?,"stats":stats,"settings":settings,"onboarding":crate::onboarding::load(&app.store)?,
         "events":app.store.events(60)?,"last_indexed":app.store.metadata::<String>("last_indexed")?,
         "last_scan":app.store.metadata::<String>("last_scan")?,"scanning":app.scanning.load(Ordering::SeqCst),
@@ -213,9 +231,12 @@ async fn documents(
     State(state): State<ApiState>,
     Query(query): Query<HashMap<String, String>>,
 ) -> ApiResult {
+    let _maintenance=state.app.maintenance.read().await;
+    let roots=state.app.store.roots()?;
+    let rules=roots.iter().filter_map(|root|crate::rules::Rules::new(root,&state.app.home,&state.app.runtime.resources).ok().map(|rules|(root.id.clone(),rules))).collect::<HashMap<_,_>>();
     let mut documents = state.app.store.documents()?;
     documents.retain(|document| {
-        if document.status == "removing" || !state.app.store.root(&document.root_id).is_ok_and(|root|crate::indexer::eligible(std::path::Path::new(&document.path),&root,&state.app).unwrap_or(false)) { return false; }
+        if document.status == "removing" || !rules.get(&document.root_id).is_some_and(|rules|rules.skip_indexed(std::path::Path::new(&document.path)).is_none()) { return false; }
         if query.get("collection_id").is_some_and(|id|document.root_id!=*id) { return false; }
         query
             .get("project_id")
@@ -227,7 +248,7 @@ async fn documents(
                 .get("status")
                 .is_none_or(|status| document.status == *status)
     });
-    documents.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    documents.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(||a.id.cmp(&b.id)));
     let total = documents.len();
     let offset = query
         .get("offset")
@@ -331,7 +352,10 @@ async fn inspect_roots(State(state): State<ApiState>, Json(input): Json<Value>) 
         match root_candidate(&state.app,item) {
             Ok(root)=>{
                 let rules=crate::rules::Rules::new(&root,&state.app.home,&state.app.runtime.resources)?;
-                results.push(json!({"path":item["path"],"canonical_path":root.path,"name":root.name,"warning":rules.skip(std::path::Path::new(&root.path),true)}));
+                let directory=std::path::Path::new(&root.path);
+                let project=[".git","package.json","pyproject.toml","Cargo.toml","go.mod"].iter().any(|name|directory.join(name).exists());
+                let advice=project.then_some("检测到代码工程。依赖与构建产物默认排除，修改文件会在静默后更新；规则可按需要调整。");
+                results.push(json!({"path":item["path"],"canonical_path":root.path,"name":root.name,"warning":rules.skip(directory,true),"advice":advice}));
             },
             Err(error)=>results.push(json!({"path":item["path"],"error":error.to_string()})),
         }
@@ -527,7 +551,7 @@ async fn search(
     Json(input): Json<retrieval::SearchRequest>,
 ) -> ApiResult {
     Ok(Json(json!(
-        retrieval::search(&state.app, &Scope::Owner, &input).await?
+        crate::queries::run(state.app.clone(),Scope::Owner,"owner_search".into(),serde_json::to_value(input)?,crate::queries::RequestLife::new()).await?
     )))
 }
 async fn ask(
@@ -622,7 +646,8 @@ async fn save_settings(State(state): State<ApiState>, Json(mut input): Json<Valu
     if !["low", "balanced", "performance"].contains(&settings.indexing_profile.as_str()) {
         bail!("索引资源占用选项无效");
     }
-    settings.reconcile_seconds = settings.reconcile_seconds.clamp(30, 3600);
+    settings.reconcile_seconds = settings.reconcile_seconds.clamp(30, 86400);
+    settings.file_quiet_seconds=settings.file_quiet_seconds.min(600);
     for (kind, provider) in [
         ("chat", &mut settings.chat),
         ("embedding", &mut settings.embedding),
@@ -753,34 +778,14 @@ pub async fn invoke_tool(
     tool: &str,
     input: Value,
 ) -> Result<Value> {
-    let _maintenance = app.maintenance.try_read().map_err(|_| anyhow::anyhow!("知识库正在备份、恢复或调整资料目录，请稍后重试。"))?;
-    let scope = Scope::Agent(client);
-    match tool {
-        "get_context" => retrieval::context(app, &scope, &serde_json::from_value(input)?).await,
-        "search" => {
-            let result = retrieval::search(app, &scope, &serde_json::from_value(input)?).await?;
-            app.audit(&scope, "search", result.hits.len());
-            Ok(serde_json::to_value(result)?)
-        }
-        "read_source" => retrieval::read_source(app, &scope, &serde_json::from_value(input)?),
-        "list_projects" => {
-            let projects = retrieval::projects(app, &scope)?;
-            app.audit(&scope, "list_projects", projects.len());
-            Ok(json!({"projects":projects}))
-        }
-        "propose_memory" => Ok(json!(retrieval::propose(
-            app,
-            &scope,
-            serde_json::from_value(input)?
-        )?)),
-        _ => bail!("知识工具不存在"),
-    }
+    crate::queries::run(app.clone(),Scope::Agent(client),tool.into(),input,crate::queries::RequestLife::new()).await
 }
 
 async fn agent_tool(
     State(state): State<ApiState>,
     Path((id, tool)): Path<(String, String)>,
     headers: HeaderMap,
+    Extension(life):Extension<Arc<crate::queries::RequestLife>>,
     Json(input): Json<ToolBody>,
 ) -> std::result::Result<Json<Value>, ApiError> {
     if !origin_allowed(&headers) {
@@ -793,6 +798,6 @@ async fn agent_tool(
         .context("连接未授权")?;
     let client = state.app.store.authenticate(&id, token)?;
     Ok(Json(
-        invoke_tool(&state.app, client, &tool, input.arguments).await?,
+        crate::queries::run(state.app.clone(),Scope::Agent(client),tool,input.arguments,life).await?,
     ))
 }

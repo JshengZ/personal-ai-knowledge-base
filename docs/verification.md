@@ -2,7 +2,22 @@
 
 [English](verification.md) · [简体中文](verification.zh-CN.md) · [Home](../README.md)
 
-Initial verification: **1.0.0, 2026-11-25**. Current verification: **1.0.2, 2026-11-27**; previous release evidence is retained below. Local build host: Intel macOS 14.6.1. Targets: Intel Mac and Windows x64. All fixtures are synthetic and isolated from real personal work folders.
+Initial verification: **1.0.0, 2026-11-25**. Current verification: **1.1.0, 2026-11-28**; previous release evidence is retained below. Local build host: Intel macOS 14.6.1. Targets: Intel Mac and Windows x64. All fixtures are synthetic and isolated from real personal work folders.
+
+
+## 1.1.0 verification (2026-11-28)
+
+All fixtures are synthetic and isolated. Local evidence comes from Intel Mac/macOS 14.6.1, not a rerun of the company's complete 34 GB Windows source set.
+
+- 51 Rust regressions passed: 23,000 synthetic metadata rows with complete totals/stable pagination, reserved UI reads during mutation saturation, WAL/FTS reads during writer/normal-query contention, quiet generations, duplicate-chunk recovery and restore invalidation.
+- Real cold/concurrent MCP clients and all five tools/protocol versions passed. Contended 14–18 second proposals returned committed records; identical retries reused IDs. Native events handled changes/renames/deletions. Organization-compatible API and full-text integration regressions passed.
+- An independent read-only subagent reproduced and accepted: 3500 repeated chunks restored after partial cleanup; three restores with ten reads each agreeing with disk; reserved FTS in 275 ms while six normal queries were occupied; cancellation freeing capacity in about 2.92 s; stalled-body shutdown in 1.36 s; five quick exits without panic. These are fixture measurements, not general performance guarantees.
+- A desktop flow with 206 actual temporary files covered full pagination, expansion surviving refresh, preserving/retrying a failed IPC read, explicit sharing, direct routing, quiet time and wide/narrow status layouts. Screenshots contain no real personal/company data.
+- Release gates run native macOS/Windows source regressions and packaged model/OCR/MCP/UI checks. Windows additionally checks engine PE product/file versions. Package audits and publication verify exact source provenance, resource hashes and exclusion of knowledge/credentials before release.
+
+![Runtime status](images/runtime-status.png)
+![Explicit sharing](images/sharing-choice.png)
+
 
 ## 1.0.2 verification (2026-11-27)
 

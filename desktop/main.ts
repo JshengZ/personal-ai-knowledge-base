@@ -11,6 +11,7 @@ import {
   shell,
   clipboard,
 } from "electron";
+import { localFetch } from "./local-http";
 import { spawn } from "node:child_process";
 import {
   readFile,
@@ -190,7 +191,7 @@ function processAlive(pid: number) {
 
 async function stopService(info: ServiceInfo) {
   try {
-    await fetch("http://127.0.0.1:" + info.port + "/api/shutdown", {
+    await localFetch("http://127.0.0.1:" + info.port + "/api/shutdown", {
       method: "POST",
       headers: {
         Authorization: "Bearer " + info.token,
@@ -241,7 +242,7 @@ async function stopForMove() {
   }
   if (!processAlive(current.pid)) return;
   try {
-    await fetch("http://127.0.0.1:" + current.port + "/api/settings", {
+    await localFetch("http://127.0.0.1:" + current.port + "/api/settings", {
       method: "PATCH",
       headers: {
         Authorization: "Bearer " + current.token,
@@ -359,7 +360,7 @@ async function confirmInitialStorage() {
 async function healthy(info: ServiceInfo) {
   try {
     return (
-      await fetch("http://127.0.0.1:" + info.port + "/api/health", {
+      await localFetch("http://127.0.0.1:" + info.port + "/api/health", {
         headers: { Authorization: "Bearer " + info.token },
         signal: AbortSignal.timeout(1500),
       })
@@ -400,7 +401,7 @@ async function ensureService(): Promise<ServiceInfo> {
   if (!existsSync(engine))
     throw new Error("安装包中的知识服务程序缺失，请重新安装。");
   const log = join(home, "service.log");
-  const child = spawn(engine, ["serve", "--home", home], {
+  const child = spawn(engine, ["serve", "--role", "service", "--home", home], {
     detached: true,
     stdio: ["ignore", "ignore", "ignore"],
     windowsHide: true,
@@ -437,7 +438,7 @@ async function call(method: string, path: string, body?: unknown, raw = false) {
     !["GET", "POST", "PATCH", "DELETE"].includes(method)
   )
     throw new Error("请求路径无效。");
-  const response = await fetch(
+  const response = await localFetch(
     "http://127.0.0.1:" + service.port + "/api" + path,
     {
       method,

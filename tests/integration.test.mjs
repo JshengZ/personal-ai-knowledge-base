@@ -48,7 +48,7 @@ test('files, hybrid retrieval, MCP, permissions, memory and backup form a comple
       const value=await response.json();if(!response.ok)throw new Error(path+': '+value.error);return value;
     };
     await until(()=>api('GET','/health'),'HTTP health');
-    await api('PATCH','/settings',{onboarding_complete:true,embedding:{base_url:modelUrl,model:'test-embedding',protocol:'openai'},chat:{base_url:modelUrl,model:'test-company-model',protocol:'openai'},rerank:{base_url:modelUrl,model:'test-rerank',protocol:'openai'}});
+    await api('PATCH','/settings',{onboarding_complete:true,file_quiet_seconds:0,embedding:{base_url:modelUrl,model:'test-embedding',protocol:'openai'},chat:{base_url:modelUrl,model:'test-company-model',protocol:'openai'},rerank:{base_url:modelUrl,model:'test-rerank',protocol:'openai'}});
     const publicPath=join(directory,'推荐排序');const privatePath=join(directory,'个人草稿');await mkdir(publicPath);await mkdir(privatePath);
     await writeFile(join(publicPath,'排序实验.md'),'# 排序实验\nLightGBM LambdaRank 排序。NDCG@10 为 0.462，LR 为 0.438。\n');
     await writeFile(join(privatePath,'本机资料.md'),'PRIVATE_LOCAL_ONLY_DOCUMENT 仅本机草稿。');

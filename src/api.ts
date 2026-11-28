@@ -3,8 +3,19 @@ export async function request<T>(
   path: string,
   body?: unknown,
 ): Promise<T> {
-  if (window.knowledge)
-    return window.knowledge.request(method, path, body) as Promise<T>;
+  if (window.knowledge) {
+    try {
+      return (await window.knowledge.request(method, path, body)) as T;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "本机请求失败";
+      throw new Error(
+        message.replace(
+          /^Error invoking remote method ['"][^'"]+['"]:\s*(?:Error:\s*)?/,
+          "",
+        ),
+      );
+    }
+  }
   const response = await fetch("/api" + path, {
     method,
     headers:

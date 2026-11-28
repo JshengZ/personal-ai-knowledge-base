@@ -72,8 +72,9 @@ fn deleted_collections_archive_context_and_readding_the_path_creates_a_new_proje
 #[test]
 fn connection_defaults_are_dynamic_but_legacy_and_explicit_scopes_stay_restricted() {
     let temp=tempfile::tempdir().unwrap();let state=AppState::new(temp.path().join("data"),RuntimeConfig::default()).unwrap();
-    let config=connections::create(&state,json!({"name":"automatic","kind":"other"})).unwrap();
+    let config=connections::create(&state,json!({"name":"automatic","kind":"other","scope_mode":"all"})).unwrap();
     assert_eq!(config["connection"]["scope_mode"],"all");
+    let default=connections::create(&state,json!({"name":"unselected"})).unwrap();assert_eq!(default["connection"]["scope_mode"],"selected");assert_eq!(default["connection"]["project_ids"],json!([]));
     let manual=connections::create(&state,json!({"name":"restricted","project_ids":[]})).unwrap();assert_eq!(manual["connection"]["scope_mode"],"selected");
     let mut legacy=config["connection"].clone();legacy.as_object_mut().unwrap().remove("scope_mode");
     assert_eq!(serde_json::from_value::<Connection>(legacy).unwrap().scope_mode,"selected");

@@ -12,6 +12,9 @@ use tokio::sync::{Notify, RwLock};
 
 pub struct AppState {
     pub store: Arc<Store>,
+    pub diagnostics: Arc<crate::diagnostics::Diagnostics>,
+    pub query_lanes: Arc<tokio::sync::Semaphore>,
+    pub keyword_lanes: Arc<tokio::sync::Semaphore>,
     pub models: Arc<Models>,
     pub parser: crate::parser::ParserService,
     pub runtime: RuntimeConfig,
@@ -23,6 +26,7 @@ pub struct AppState {
     pub embedding_busy: AtomicBool,
     pub semantic_error: RwLock<Option<String>>,
     pub requests: Arc<tokio::sync::Semaphore>,
+    pub read_requests: Arc<tokio::sync::Semaphore>,
     pub library_lock: std::sync::Mutex<()>,
     pub shutdown: tokio_util::sync::CancellationToken,
     pub embedding_metrics: std::sync::Mutex<crate::progress::EmbeddingMetrics>,
@@ -66,6 +70,7 @@ impl AppState {
             store.set_metadata("settings", &settings)?;
         }
         let mut settings = store.settings()?;
+        if settings.migrate_policy() {store.set_metadata("settings",&settings)?;}
         if settings.max_file_mb > 32 {
             settings.max_file_mb = 32;
             store.set_metadata("settings", &settings)?;
@@ -79,6 +84,9 @@ impl AppState {
         let models = Models::new(namespace, runtime.clone(), temporary.clone())?;
         Ok(Arc::new(Self {
             stopping: store.cancelled.clone(),
+            diagnostics: crate::diagnostics::Diagnostics::new(&store),
+            query_lanes: Arc::new(tokio::sync::Semaphore::new(6)),
+            keyword_lanes: Arc::new(tokio::sync::Semaphore::new(2)),
             store,
             models,
             parser: crate::parser::ParserService::new(runtime.clone(), temporary),
@@ -90,6 +98,7 @@ impl AppState {
             embedding_busy: AtomicBool::new(false),
             semantic_error: RwLock::new(None),
             requests: Arc::new(tokio::sync::Semaphore::new(8)),
+            read_requests: Arc::new(tokio::sync::Semaphore::new(4)),
             library_lock: std::sync::Mutex::new(()),
             shutdown: tokio_util::sync::CancellationToken::new(),
             embedding_metrics: std::sync::Mutex::new(crate::progress::EmbeddingMetrics::default()),
@@ -167,7 +176,9 @@ impl AppState {
         let metadata = std::fs::metadata(&path)?;
         let modified = modified_ms(&metadata);
         if metadata.len() != document.size || modified != document.modified_ms {
-            let _ = self.store.enqueue(&document.path, &document.root_id, true);
+            let mut hints=self.diagnostics.hints.lock().unwrap();
+            if hints.len()<4096 {hints.insert(std::path::PathBuf::from(&document.path));}
+            drop(hints);
             self.wake.notify_one();
             bail!("原文件正在更新，请等索引完成后重试");
         }
@@ -255,12 +266,7 @@ impl AppState {
 
     pub fn audit(&self, scope: &Scope, tool: &str, count: usize) {
         if let Scope::Agent(client) = scope {
-            let _ = self.store.touch_client(&client.id);
-            let _ = self.store.event(
-                "mcp",
-                "Agent 调用了知识库",
-                json!({"connection_id":client.id,"name":client.name,"tool":tool,"results":count}),
-            );
+            self.diagnostics.audit(crate::diagnostics::Audit{client_id:client.id.clone(),tool:tool.into(),request_id:identifier(),phase:"computed",count,elapsed_ms:0,mode:None,error_code:None});
         }
     }
 }

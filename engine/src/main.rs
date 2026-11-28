@@ -1,4 +1,7 @@
 mod api;
+mod errors;
+mod diagnostics;
+mod queries;
 mod appearance;
 mod backup;
 mod connections;
@@ -8,6 +11,7 @@ mod knowledge;
 mod logging;
 mod mcp;
 mod models;
+mod network;
 mod onboarding;
 mod parser;
 mod processes;
@@ -44,6 +48,8 @@ struct Arguments {
     home: Option<PathBuf>,
     #[arg(long, global = true)]
     runtime: Option<PathBuf>,
+    #[arg(long,global=true,value_parser=["service","mcp-stdio","storage-migration"])]
+    role:Option<String>,
     #[command(subcommand)]
     command: Mode,
 }
@@ -72,6 +78,8 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let arguments = Arguments::parse();
+    let role=match &arguments.command {Mode::Serve=>"service",Mode::Mcp{..}=>"mcp-stdio",Mode::MigrateData{..}=>"storage-migration"};
+    if arguments.role.as_deref().is_some_and(|value|value!=role) {bail!("进程 role 与子命令不匹配");}
     let home = storage::resolve_home(&arguments.home.unwrap_or_else(default_home))?;
     if let Mode::MigrateData { destination } = &arguments.command {
         println!("{}", storage::migrate(&home, destination)?);
@@ -157,14 +165,14 @@ async fn serve(home: PathBuf, runtime: RuntimeConfig) -> Result<()> {
     }
     let worker = app.clone();
     let counting = app.clone();
-    tokio::task::spawn_blocking(move || {
+    let counters=tokio::task::spawn_blocking(move || {
         if let Err(error) = crate::counters::backfill(&counting.store) {
             tracing::warn!(%error,"progress counter initialization interrupted");
         }
         counting.wake.notify_one();
     });
     let runtime_handle = tokio::runtime::Handle::current();
-    tokio::task::spawn_blocking(move || runtime_handle.block_on(indexer::run(worker)));
+    let indexing=tokio::task::spawn_blocking(move || runtime_handle.block_on(indexer::run(worker)));
     let stopping = app.clone();
     axum::serve(listener, router)
         .with_graceful_shutdown(async move {
@@ -179,6 +187,7 @@ async fn serve(home: PathBuf, runtime: RuntimeConfig) -> Result<()> {
         })
         .await?;
     app.stop();
+    for result in [indexing.await,counters.await] {if let Err(error)=result {tracing::error!(%error,"service worker join failed");}}
     app.models.stop().await;
     app.parser.stop().await;
     let _ = std::fs::remove_file(home.join("service.json"));
@@ -189,16 +198,28 @@ async fn serve(home: PathBuf, runtime: RuntimeConfig) -> Result<()> {
 
 pub async fn ensure_service(home: &Path, runtime: &RuntimeConfig) -> Result<ServiceInfo> {
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(2))
         .build()?;
-    if let Some(info) = read_service(home) {
-        if healthy(&client, &info).await {
-            if info.version != env!("CARGO_PKG_VERSION") {
-                bail!("后台服务版本需要升级，请先打开新版知识库应用");
+    let start=std::time::Instant::now();
+    let startup=std::fs::OpenOptions::new().read(true).write(true).create(true).open(home.join("startup.lock"))?;
+    loop {
+        if let Some(info)=read_service(home) {
+            if healthy(&client,&info).await {
+                if info.version!=env!("CARGO_PKG_VERSION") {return Err(errors::ServiceError::new("service_version_mismatch",format!("后台服务版本 {} 与当前引擎 {} 不一致，请退出旧服务后重新启动",info.version,env!("CARGO_PKG_VERSION")),axum::http::StatusCode::CONFLICT).into());}
+                return Ok(info);
             }
-            return Ok(info);
         }
+        if startup.try_lock_exclusive().is_ok() {break;}
+        if start.elapsed()>Duration::from_secs(25) {return Err(errors::ServiceError::new("service_starting","另一个进程正在启动共享后台服务，请稍后重试",axum::http::StatusCode::SERVICE_UNAVAILABLE).into());}
+        tokio::time::sleep(Duration::from_millis(150)).await;
     }
+    // Recheck after acquiring the inter-process startup lock.
+    if let Some(info)=read_service(home) {if healthy(&client,&info).await {
+        if info.version!=env!("CARGO_PKG_VERSION") {return Err(errors::ServiceError::new("service_version_mismatch",format!("后台服务版本 {} 与当前引擎 {} 不一致，请退出旧服务后重新启动",info.version,env!("CARGO_PKG_VERSION")),axum::http::StatusCode::CONFLICT).into());}
+        return Ok(info);
+    }}
+
     if !runtime.parser_runtime.as_os_str().is_empty() {
         connections::private_write(&home.join("runtime.json"), &serde_json::to_vec(runtime)?)?;
     }
@@ -208,6 +229,7 @@ pub async fn ensure_service(home: &Path, runtime: &RuntimeConfig) -> Result<Serv
     let mut command = Command::new(executable);
     command
         .arg("serve")
+        .args(["--role","service"])
         .arg("--home")
         .arg(home)
         .current_dir(&temporary)
@@ -229,7 +251,7 @@ pub async fn ensure_service(home: &Path, runtime: &RuntimeConfig) -> Result<Serv
     }
     command
         .spawn()
-        .context("无法启动本地知识服务，请打开知识库窗口查看安装状态")?;
+        .context("无法启动独立后台知识服务，请检查安装路径及本机服务日志")?;
     for _ in 0..80 {
         tokio::time::sleep(Duration::from_millis(150)).await;
         if let Some(info) = read_service(home) {
@@ -238,7 +260,7 @@ pub async fn ensure_service(home: &Path, runtime: &RuntimeConfig) -> Result<Serv
             }
         }
     }
-    bail!("知识服务启动超时，请重新打开应用")
+    Err(errors::ServiceError::new("service_start_timeout","独立后台知识服务启动超时，请检查 service.log",axum::http::StatusCode::SERVICE_UNAVAILABLE).into())
 }
 
 fn read_service(home: &Path) -> Option<ServiceInfo> {

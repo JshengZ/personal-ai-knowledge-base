@@ -33,6 +33,7 @@ jobs:
           workspaces: engine
           cache-on-failure: true
       - run: npm ci
+      - run: npm run test:versions
       - run: npm run assets
       - name: Build static Windows embedding runtime
         if: matrix.target == 'win'
@@ -48,7 +49,8 @@ jobs:
           PKB_UI_ARTIFACTS: ${{ github.workspace }}/.local/package-storage-screenshots
           PKB_TOUR_ARTIFACTS: ${{ github.workspace }}/.local/package-guide-screenshots
           PKB_COLLECTION_ARTIFACTS: ${{ github.workspace }}/.local/package-collection-screenshots
-        run: node --test --test-concurrency=1 tests/desktop-storage.test.mjs tests/onboarding.test.mjs tests/collections.test.mjs
+          PKB_RUNTIME_ARTIFACTS: ${{ github.workspace }}/.local/package-runtime-screenshots
+        run: node --test --test-concurrency=1 tests/desktop-storage.test.mjs tests/onboarding.test.mjs tests/collections.test.mjs tests/library-ui.test.mjs
       - run: node scripts/release-info.mjs
       - name: Verify installer source provenance
         run: node --input-type=module -e "import fs from 'node:fs'; const info=JSON.parse(fs.readFileSync('release/BUILD-INFO.json','utf8')); if(info.source_commit!==process.env.GITHUB_SHA) throw new Error('Installer source commit mismatch');"

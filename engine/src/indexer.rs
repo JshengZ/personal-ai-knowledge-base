@@ -144,6 +144,7 @@ pub async fn scan_all(state: Arc<AppState>, force: bool) -> Result<()> {
 }
 
 fn scan_root(state: &AppState, root: &Root, force: bool) -> Result<()> {
+    let _task=state.diagnostics.task("scan",json!({"root_id":root.id,"name":root.name}));
     reconcile_root(state, root, force, || state.indexing_allowed())
 }
 
@@ -214,7 +215,7 @@ pub(crate) fn reconcile_root(
         });
         if force || changed {
             if queued < 5000 && allow_growth() {
-                state.store.enqueue(&path, &root.id, force)?;
+                queue_file(state,root,Path::new(&path),force,false)?;
                 queued += 1;
             } else {
                 deferred = true;
@@ -234,7 +235,7 @@ pub(crate) fn reconcile_root(
         // its own bounded queue and does not need another full filesystem scan
         // for every 64 legacy chunks removed.
         for path in state.store.queued_paths(&root.id)? {
-            if !found.contains(&path) {
+            if !found.contains(&path) && (!Path::new(&path).is_file() || !state.store.root(&root.id).is_ok_and(|latest|eligible(Path::new(&path),&latest,state).unwrap_or(false))) {
                 state.store.finish_root_job(&path, &root.id)?;
             }
         }
@@ -243,7 +244,7 @@ pub(crate) fn reconcile_root(
             .documents()?
             .into_iter()
             .filter(|document| document.root_id == root.id)
-            .filter(|document| !found.contains(&document.path))
+            .filter(|document| !found.contains(&document.path) && (!Path::new(&document.path).is_file() || !eligible(Path::new(&document.path),root,state).unwrap_or(false)))
             .map(|document| document.id)
             .collect::<Vec<_>>();
         state.store.schedule_cleanup_many(&removals)?;
@@ -257,83 +258,104 @@ pub(crate) fn reconcile_root(
 }
 
 pub async fn run(state: Arc<AppState>) {
-    let (sender, mut changes) = mpsc::channel::<Vec<PathBuf>>(256);
-    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        if let Ok(event) = event {
-            if matches!(
-                event.kind,
-                EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-            ) {
-                let _ = sender.try_send(event.paths);
-            }
+    let (sender,mut changes)=mpsc::channel::<Vec<PathBuf>>(256);
+    let observer=state.clone();
+    let mut watcher=notify::recommended_watcher(move|event:notify::Result<notify::Event>| {
+        match event {
+            Ok(event) if matches!(event.kind,EventKind::Create(_)|EventKind::Modify(_)|EventKind::Remove(_))=>{
+                if sender.try_send(event.paths).is_err() {observer.diagnostics.watcher_drops.fetch_add(1,Ordering::Relaxed);}
+            },
+            Err(error)=>{observer.diagnostics.watcher_drops.fetch_add(1,Ordering::Relaxed);tracing::warn!(%error,"filesystem watcher requires reconciliation");},
+            _=>{},
         }
-    })
-    .ok();
-    let mut watching = HashSet::<String>::new();
-    let _ = scan_all(state.clone(), false).await;
-    let worker = state.clone();
-    let handle = tokio::runtime::Handle::current();
-    tokio::task::spawn_blocking(move || handle.block_on(run_jobs(worker)));
-    let worker = state.clone();
-    let handle = tokio::runtime::Handle::current();
-    tokio::task::spawn_blocking(move || handle.block_on(run_cleanup(worker)));
-    let worker = state.clone();
-    let handle = tokio::runtime::Handle::current();
-    tokio::task::spawn_blocking(move || handle.block_on(run_embeddings(worker)));
-    let worker = state.clone();
-    let handle = tokio::runtime::Handle::current();
-    tokio::task::spawn_blocking(move || handle.block_on(crate::knowledge::run_summaries(worker)));
-    let mut interval = tokio::time::interval(Duration::from_secs(30));
-    let mut last_scan = std::time::Instant::now();
+    }).map_err(|error|tracing::warn!(%error,"filesystem watcher unavailable")).ok();
+    let handle=tokio::runtime::Handle::current();
+    let worker=state.clone();let runtime=handle.clone();let jobs=tokio::task::spawn_blocking(move||runtime.block_on(run_jobs(worker)));
+    let worker=state.clone();let runtime=handle.clone();let cleanup=tokio::task::spawn_blocking(move||runtime.block_on(run_cleanup(worker)));
+    let worker=state.clone();let runtime=handle.clone();let embeddings=tokio::task::spawn_blocking(move||runtime.block_on(run_embeddings(worker)));
+    let worker=state.clone();let summaries=tokio::task::spawn_blocking(move||handle.block_on(crate::knowledge::run_summaries(worker)));
+    let mut watching=HashSet::<String>::new();let mut fingerprints=HashMap::<String,String>::new();
+    let mut first=true;let mut paused=state.store.settings().unwrap_or_default().paused;
+    let mut last_scan=std::time::Instant::now();let mut seen_drops=0;
+    let mut interval=tokio::time::interval(Duration::from_secs(30));
     while !state.stopping.load(Ordering::SeqCst) {
-        if let Ok(roots) = state.store.roots() {
-            let enabled: HashSet<_> = roots
-                .into_iter()
-                .filter(|root| root.enabled)
-                .map(|root| root.path)
-                .collect();
-            if let Some(watcher) = watcher.as_mut() {
-                for old in watching.difference(&enabled) {
-                    let _ = watcher.unwatch(Path::new(old));
-                }
-                for new in enabled.difference(&watching) {
-                    if let Err(error) = watcher.watch(Path::new(new), RecursiveMode::Recursive) {
-                        let _ = state.store.event(
-                            "watcher",
-                            "文件监听暂不可用，定时核对仍在运行",
-                            json!({"reason":error.to_string()}),
-                        );
-                    }
-                }
+        let roots=state.store.roots().unwrap_or_default();
+        let settings=state.store.settings().unwrap_or_default();
+        let enabled=roots.iter().filter(|root|root.enabled).map(|root|root.path.clone()).collect::<HashSet<_>>();
+        if let Some(watcher)=watcher.as_mut() {
+            for path in watching.difference(&enabled).cloned().collect::<Vec<_>>() {let _=watcher.unwatch(Path::new(&path));watching.remove(&path);}
+            for root in roots.iter().filter(|root|root.enabled) {
+                if watching.contains(&root.path) {continue;}
+                let result=watcher.watch(Path::new(&root.path),RecursiveMode::Recursive);
+                state.diagnostics.watchers.lock().unwrap().insert(root.id.clone(),json!({"active":result.is_ok(),"backend":"native","error":result.as_ref().err().map(ToString::to_string)}));
+                if result.is_ok() {watching.insert(root.path.clone());}
             }
-            watching = enabled;
         }
+        state.diagnostics.watchers.lock().unwrap().retain(|id,_|roots.iter().any(|root|root.id==*id&&root.enabled));
+        let current=roots.iter().map(|root|(root.id.clone(),format!("{}:{}:{}:{:?}",root.path,root.enabled,serde_json::to_string(&root.filters).unwrap_or_default(),root.exclusions))).collect::<HashMap<_,_>>();
+        let changed=current.iter().filter(|(id,value)|fingerprints.get(*id)!=Some(*value)).map(|(id,_)|id.clone()).collect::<HashSet<_>>();
+        if !settings.paused {
+            if first || paused {let _=scan_all(state.clone(),false).await;last_scan=std::time::Instant::now();}
+            else {for root in roots.iter().filter(|root|root.enabled&&changed.contains(&root.id)) {let _=scan_root_recorded(&state,root,false);}}
+        }
+        first=false;paused=settings.paused;fingerprints=current;
         tokio::select! {
             event=changes.recv()=>{
                 if let Some(mut paths)=event {
-                    tokio::time::sleep(Duration::from_millis(900)).await;
-                    while paths.len()<4096 { match changes.try_recv() { Ok(extra)=>paths.extend(extra), Err(_)=>break } }
-                    if state.reconciliation_allowed() {
-                        let roots=state.store.roots().unwrap_or_default();
-                        for path in paths.into_iter().collect::<HashSet<_>>() {
-                            if let Some(root)=roots.iter().filter(|root|root.enabled && path.starts_with(&root.path)).max_by_key(|root|root.path.len()) {
-                                if state.indexing_allowed() && path.is_file() && eligible(&path,root,&state).unwrap_or(false) && state.store.pending_jobs().unwrap_or(5000)<5000 {let _=state.store.enqueue(&path.to_string_lossy(),&root.id,false);}
-                            }
-                        }
-                        let _=scan_all(state.clone(),false).await;
-                        last_scan=std::time::Instant::now();
+                    tokio::select! {_=tokio::time::sleep(Duration::from_millis(750))=>{},_=state.shutdown.cancelled()=>break}
+                    while paths.len()<10_000 {match changes.try_recv(){Ok(extra)=>paths.extend(extra),Err(_)=>break}}
+                    if !paused {process_paths(&state,paths.into_iter().collect(),true);}
+                }
+            },
+            _=state.wake.notified()=>{
+                let hints=std::mem::take(&mut *state.diagnostics.hints.lock().unwrap());
+                if !paused {process_paths(&state,hints,false);}
+                // Queue-capacity backpressure may require another pass. A normal
+                // file completion or model setting change does not walk all roots.
+                if state.indexing_allowed() && state.store.pending_jobs().unwrap_or(5000)<500 {
+                    for root in state.store.roots().unwrap_or_default().iter().filter(|root|root.enabled) {
+                        if state.store.metadata::<bool>(&format!("scan_deferred:{}",root.id)).ok().flatten()==Some(true) {let _=scan_root_recorded(&state,root,false);}
                     }
                 }
             },
-            _=state.wake.notified()=>{let _=scan_all(state.clone(),false).await;},
-            _=state.shutdown.cancelled()=>break,
             _=interval.tick()=>{
-                let settings=state.store.settings().unwrap_or_default();
-                if !settings.paused && last_scan.elapsed().as_secs()>=settings.reconcile_seconds.clamp(30,3600) {
-                    let _=scan_all(state.clone(),false).await;
-                    last_scan=std::time::Instant::now();
+                let drops=state.diagnostics.watcher_drops.load(Ordering::Relaxed);
+                if !paused && (last_scan.elapsed().as_secs()>=settings.reconcile_seconds.clamp(30,86400) || drops!=seen_drops) {
+                    let _=scan_all(state.clone(),false).await;last_scan=std::time::Instant::now();seen_drops=drops;
                 }
             },
+            _=state.shutdown.cancelled()=>break,
+        }
+    }
+    for result in [jobs.await,cleanup.await,embeddings.await,summaries.await] {if let Err(error)=result {tracing::error!(%error,"background worker failed during shutdown");}}
+}
+
+fn scan_root_recorded(state:&AppState,root:&Root,force:bool)->Result<()> {
+    let result=scan_root(state,root,force);let _library=state.library_lock.lock().unwrap();
+    if let Ok(mut latest)=state.store.root(&root.id) {if latest.path==root.path {latest.last_scan=Some(timestamp());latest.error=result.as_ref().err().map(ToString::to_string);state.store.save_root(&latest)?;}}
+    result
+}
+fn process_paths(state:&AppState,paths:HashSet<PathBuf>,activity:bool) {
+    let roots=state.store.roots().unwrap_or_default();
+    for path in paths {
+        if state.stopping.load(Ordering::SeqCst) {break;}
+        let Some(root)=roots.iter().find(|root|root.enabled&&crate::rules::contains(Path::new(&root.path),&path)) else {continue;};
+        if path.is_file() {
+            if state.store.pending_jobs().unwrap_or(5000)>=5000 {
+                let _=state.store.set_metadata(&format!("scan_deferred:{}",root.id),&true);
+            } else if state.indexing_allowed() && queue_file(state,root,&path,false,false).unwrap_or(false) && activity {state.diagnostics.change(&root.id);}
+        } else if path.is_dir() {
+            if path==Path::new(&root.path) {continue;}
+            let Ok(rules)=crate::rules::Rules::new(root,&state.home,&state.runtime.resources) else {continue;};
+            for entry in WalkDir::new(&path).follow_links(false).max_depth(100).into_iter().filter_entry(|entry|!entry.file_type().is_dir()||rules.skip(entry.path(),true).is_none()).filter_map(Result::ok) {
+                if state.store.pending_jobs().unwrap_or(5000)>=5000 {let _=state.store.set_metadata(&format!("scan_deferred:{}",root.id),&true);break;}
+                if entry.file_type().is_file() {let _=queue_file(state,root,entry.path(),false,false);}
+            }
+        } else {
+            // Renames/removals reconcile only records under the affected path.
+            if let Ok(documents)=state.store.documents_under(&root.id,&path.to_string_lossy()) {
+                for document in documents {if !Path::new(&document.path).is_file() {let _=state.store.schedule_cleanup_many(&[document.id]);}}
+            }
         }
     }
 }
@@ -420,12 +442,13 @@ async fn run_jobs(state: Arc<AppState>) {
             tokio::time::sleep(Duration::from_secs(1)).await;
             continue;
         }
-        let job = state.store.next_job().unwrap_or(None);
-        if let Some((path, root_id, force, attempts)) = job {
+        let job = state.store.next_job_generation().unwrap_or(None);
+        if let Some((path, root_id, force, attempts,generation)) = job {
+            let _task=state.diagnostics.task("file_index",json!({"path":path,"root_id":root_id}));
             let _maintenance = state.maintenance.read().await;
             match index_file(&state, &path, &root_id, force).await {
                 Ok(()) => {
-                    let _ = state.store.finish_root_job(&path, &root_id);
+                    let _ = state.store.finish_generation(&path, &root_id,generation);
                     if state
                         .store
                         .pending_jobs()
@@ -440,7 +463,7 @@ async fn run_jobs(state: Arc<AppState>) {
                     // Do not resurrect its document or retry work for a new owner.
                     if !state.store.root(&root_id).is_ok_and(|root| root.enabled
                         && eligible(Path::new(&path), &root, &state).unwrap_or(false)) {
-                        let _ = state.store.finish_root_job(&path, &root_id);
+                        let _ = state.store.finish_generation(&path, &root_id,generation);
                         continue;
                     }
                     let message = crate::storage::error_message(&error);
@@ -459,9 +482,9 @@ async fn run_jobs(state: Arc<AppState>) {
                         || message.contains("上限")
                         || message.contains("过大")
                     {
-                        let _ = state.store.finish_root_job(&path, &root_id);
+                        let _ = state.store.finish_generation(&path, &root_id,generation);
                     } else {
-                        let _ = state.store.retry_job(&path, attempts);
+                        let _ = state.store.retry_generation(&path,generation,attempts);
                     }
                 }
             }
@@ -540,7 +563,7 @@ async fn index_file(state: &AppState, path: &str, root_id: &str, force: bool) ->
         status: "indexing".into(),
         error: None,
         chunks: 0,
-        ocr: false,
+        ocr: previous.as_ref().is_some_and(|document|document.ocr),
     };
     if let Some(previous) = &previous {
         document.version = previous.version.clone();
@@ -588,7 +611,7 @@ async fn index_file(state: &AppState, path: &str, root_id: &str, force: bool) ->
     document.modified_ms = modified_ms(&after_metadata);
     document.size = after_metadata.len();
     document.ocr = parsed.ocr;
-    let chunks: Vec<Chunk> = parsed
+    let mut chunks: Vec<Chunk> = parsed
         .blocks
         .into_iter()
         .filter(|block| !block.text.trim().is_empty())
@@ -608,6 +631,8 @@ async fn index_file(state: &AppState, path: &str, root_id: &str, force: bool) ->
             }
         })
         .collect();
+    let previous_chunks=state.store.chunks(&document.id)?;
+    reuse_chunk_ids(&document.id,&previous_chunks,&mut chunks);
     document.chunks = chunks.len();
     document.status = if chunks.is_empty() { "empty" } else { "ready" }.into();
     if chunks.is_empty() {
@@ -650,6 +675,39 @@ pub(crate) fn commit_indexed(state: &AppState, document: &Document, content: Opt
     state.store.save_project(&project)?;
     state.store.set_metadata("last_indexed", &timestamp())?;
     Ok(true)
+}
+
+pub(crate) fn reuse_chunk_ids(document_id:&str,previous:&[Chunk],chunks:&mut[Chunk]) {
+    let mut available=HashMap::<String,std::collections::VecDeque<&Chunk>>::new();
+    for chunk in previous {available.entry(blake3::hash(chunk.text.as_bytes()).to_hex().to_string()).or_default().push_back(chunk);}
+    let mut occurrences=HashMap::<String,usize>::new();
+    let reserved=previous.iter().map(|chunk|chunk.id.clone()).collect::<HashSet<_>>();
+    let mut assigned=HashSet::new();
+    for chunk in chunks {
+        let digest=blake3::hash(chunk.text.as_bytes()).to_hex().to_string();
+        let ordinal=occurrences.entry(digest.clone()).or_default();
+        chunk.id=if let Some(old)=available.get_mut(&digest).and_then(|items|items.pop_front()).filter(|old|old.text==chunk.text) {old.id.clone()}
+            else {loop {
+                let candidate=blake3::hash(format!("chunk-v3:{document_id}:{digest}:{ordinal}").as_bytes()).to_hex().to_string();
+                if !reserved.contains(&candidate) && !assigned.contains(&candidate) {break candidate;}
+                *ordinal+=1;
+            }};
+        assigned.insert(chunk.id.clone());
+        *ordinal+=1;
+    }
+}
+
+pub(crate) fn queue_file(state:&AppState,root:&Root,path:&Path,force:bool,immediate:bool)->Result<bool> {
+    #[cfg(windows)]
+    let canonical=path.canonicalize()?;
+    #[cfg(windows)]
+    let path=canonical.as_path();
+    if !root.enabled || !path.is_file() || !eligible(path,root,state)? {return Ok(false);}
+    let metadata=std::fs::metadata(path)?;let text=path.to_string_lossy();let previous=state.store.document_by_path(&text)?;
+    if !force && previous.as_ref().is_some_and(|document|document.status=="ready" && document.root_id==root.id && document.modified_ms==modified_ms(&metadata) && document.size==metadata.len()) {return Ok(false);}
+    let observed=format!("{}:{}",modified_ms(&metadata),metadata.len());
+    let quiet=if force || immediate {0}else if previous.is_some(){state.store.settings()?.file_quiet_seconds}else{2};
+    state.store.enqueue_observed(&text,&root.id,force,&observed,quiet)
 }
 
 pub fn find_project(path: &Path, root: &Path) -> PathBuf {
@@ -814,6 +872,7 @@ async fn run_embeddings(state: Arc<AppState>) {
             .collect::<Vec<_>>();
         let started = std::time::Instant::now();
         let revision=state.store.metadata::<u64>("library_revision").ok().flatten().unwrap_or(0);
+        let _task=state.diagnostics.task("embedding",json!({"model":model,"batch_chunks":chunks.len(),"profile":settings.indexing_profile}));
         let mut calculation = Box::pin(state.models.embed(&settings, &texts, false));
         let result = loop {
             tokio::select! {

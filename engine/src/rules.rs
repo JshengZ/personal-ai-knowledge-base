@@ -46,7 +46,8 @@ fn automatic_name(name: &str) -> Option<&'static str> {
     let name = name.to_ascii_lowercase();
     if [".build", ".dist", ".onefile-build"].iter().any(|suffix| name.ends_with(suffix)) {
         Some("编译产物目录（含 Nuitka）")
-    } else if name.ends_with(".app") { Some("应用程序包") }
+    } else if ["tmp","temp",".tmp",".temp",".zcode",".codex"].contains(&name.as_str()) || ["temp-","temp_","tmp-","tmp_"].iter().any(|prefix|name.starts_with(prefix)) || ["temp","tmp"].iter().any(|prefix|name.strip_prefix(prefix).is_some_and(|tail|!tail.is_empty()&&tail.chars().all(|character|character.is_ascii_digit()))) {Some("临时文件或 Agent 缓存目录")}
+    else if name.ends_with(".app") { Some("应用程序包") }
     else if name.ends_with(".dist-info") || name.ends_with(".egg-info") { Some("Python 依赖元数据") }
     else if ["node_modules", ".venv", "venv", "target", ".next", ".nuxt", ".cache", ".local",
         "__pycache__", ".npm", ".pnpm-store", ".cargo", ".rustup", ".gradle", ".m2", ".terraform",
@@ -71,6 +72,7 @@ pub struct Rules<'a> {
     resources: &'a Path,
     excludes: GlobSet,
     markers: Mutex<HashMap<PathBuf, Option<String>>>,
+    links: Mutex<HashMap<PathBuf, bool>>,
 }
 impl<'a> Rules<'a> {
     pub fn new(root: &'a Root, home: &'a Path, resources: &'a Path) -> Result<Self> {
@@ -79,7 +81,7 @@ impl<'a> Rules<'a> {
         for pattern in &root.exclusions {
             builder.add(GlobBuilder::new(pattern).case_insensitive(cfg!(windows)).build()?);
         }
-        Ok(Self { root, home, resources, excludes: builder.build()?, markers: Mutex::new(HashMap::new()) })
+        Ok(Self { root, home, resources, excludes: builder.build()?, markers: Mutex::new(HashMap::new()),links:Mutex::new(HashMap::new()) })
     }
     fn marker(&self, directory: &Path) -> Option<String> {
         let mut markers = self.markers.lock().unwrap();
@@ -95,10 +97,16 @@ impl<'a> Rules<'a> {
         }).clone()
     }
     pub fn skip(&self, path: &Path, directory: bool) -> Option<String> {
+        self.check(path,directory,false)
+    }
+    // Listing metadata must not reopen every indexed file. Source reads and
+    // scans still perform the full content and canonical-path checks.
+    pub fn skip_indexed(&self,path:&Path)->Option<String> {self.check(path,false,true)}
+    fn check(&self,path:&Path,directory:bool,indexed:bool)->Option<String> {
         if contains(self.home, path) || (!self.resources.as_os_str().is_empty() && contains(self.resources, path)) {
             return Some("知识库自身的数据或运行资源".into());
         }
-        if std::fs::symlink_metadata(path).is_ok_and(|value|value.file_type().is_symlink()) {
+        if !indexed && std::fs::symlink_metadata(path).is_ok_and(|value|value.file_type().is_symlink()) {
             return Some("符号链接或目录联接".into());
         }
         let Some(relative) = relative(Path::new(&self.root.path), path) else { return Some("资料已离开集合目录".into()); };
@@ -114,7 +122,9 @@ impl<'a> Rules<'a> {
         let root = Path::new(&self.root.path);
         let mut current = if directory { Some(path) } else { path.parent() };
         while let Some(parent) = current {
-            if std::fs::symlink_metadata(parent).is_ok_and(|value|value.file_type().is_symlink()) {
+            let linked=if indexed {*self.links.lock().unwrap().entry(parent.into()).or_insert_with(||std::fs::symlink_metadata(parent).is_ok_and(|value|value.file_type().is_symlink()))}
+                else {std::fs::symlink_metadata(parent).is_ok_and(|value|value.file_type().is_symlink())};
+            if linked {
                 return Some("符号链接或目录联接".into());
             }
             if let Some(parent_relative) = self::relative(root, parent) {
@@ -136,7 +146,7 @@ impl<'a> Rules<'a> {
         if !crate::indexer::supported(path) { return Some("不支持的文件类型（安装包、压缩包或媒体等）".into()); }
         let enabled = match kind(path) { "images"=>self.root.filters.images, "documents"=>self.root.filters.documents, _=>self.root.filters.code };
         if !enabled { return Some("此文件类型已关闭索引".into()); }
-        if !["pdf","docx","pptx","xlsx","png","jpg","jpeg","tif","tiff"].contains(
+        if !indexed && !["pdf","docx","pptx","xlsx","png","jpg","jpeg","tif","tiff"].contains(
             &path.extension().and_then(|value|value.to_str()).unwrap_or_default().to_ascii_lowercase().as_str()) {
             if let Ok(mut file) = std::fs::File::open(path) {
                 let mut bytes = [0u8;1024];

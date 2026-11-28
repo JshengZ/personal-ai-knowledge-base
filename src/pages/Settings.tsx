@@ -86,6 +86,7 @@ export function SettingsPage() {
         "max_file_mb",
         "indexing_profile",
         "reconcile_seconds",
+        "file_quiet_seconds",
       ],
       storage: ["min_free_disk_gb", "max_index_gb"],
       chat: ["chat"],
@@ -520,6 +521,27 @@ export function SettingsPage() {
                     </Select>
                   </label>
                   <label>
+                    修改后的静默时间
+                    <Select
+                      aria-label="修改后的静默时间"
+                      value={settings.file_quiet_seconds ?? 300}
+                      onChange={(event) =>
+                        setSettings((previous) => ({
+                          ...previous,
+                          file_quiet_seconds: Number(event.target.value),
+                        }))
+                      }
+                    >
+                      <option value={0}>立即处理</option>
+                      <option value={60}>1 分钟</option>
+                      <option value={300}>5 分钟</option>
+                      <option value={600}>10 分钟</option>
+                    </Select>
+                    <small>
+                      同一文件持续保存时合并变更。新文件短暂稳定后处理；未变化的片段保留原向量。
+                    </small>
+                  </label>
+                  <label>
                     目录补扫间隔
                     <Select
                       aria-label="目录补扫间隔"
@@ -534,7 +556,9 @@ export function SettingsPage() {
                       <option value={60}>1 分钟</option>
                       <option value={300}>5 分钟</option>
                       <option value={900}>15 分钟</option>
+                      <option value={1800}>30 分钟</option>
                       <option value={3600}>1 小时</option>
+                      <option value={21600}>6 小时</option>
                     </Select>
                   </label>
                   <label className="checkbox-label">
@@ -922,6 +946,25 @@ export function ProviderFields({
           </Select>
         </label>
       )}
+      <label>
+        连接方式
+        <Select
+          aria-label="连接方式"
+          value={provider.proxy_mode || "system"}
+          onChange={(event) =>
+            onChange({
+              ...provider,
+              proxy_mode: event.target.value as "system" | "direct",
+            })
+          }
+        >
+          <option value="system">系统代理与环境变量</option>
+          <option value="direct">直连（跳过代理）</option>
+        </Select>
+        <small>
+          Windows 同时读取当前用户的固定代理和绕过列表。本机知识服务始终直连。
+        </small>
+      </label>
       <label>
         API 地址{optional ? "（可选）" : ""}
         <input

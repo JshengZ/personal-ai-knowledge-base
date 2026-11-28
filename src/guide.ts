@@ -55,8 +55,9 @@ export const guideSteps: readonly GuideStep[] = [
     location: "Agent 连接",
     title: "通过 MCP 接入 Agent",
     description:
-      "添加连接后，默认共享全部允许 Agent 使用的资料，后续新增自动纳入。ZCode 可一键配置。",
-    detail: "也可指定项目范围。共享个人记忆和提交建议的权限分别设置。",
+      "创建连接时先选择共享范围，可自动共享或指定项目。ZCode 可一键配置。",
+    detail:
+      "选择自动共享后，后续新增资料持续纳入。个人记忆与记忆建议分别授权。",
   },
   {
     id: "search",

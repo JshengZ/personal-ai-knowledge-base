@@ -12,6 +12,7 @@ type Entry = {
   name: string;
   error?: string;
   warning?: string;
+  advice?: string;
 };
 const basename = (path: string) =>
   path
@@ -70,7 +71,12 @@ export function DirectoryBatchDialog({ onClose }: { onClose: () => void }) {
     if (!entries.length) return;
     const timer = setTimeout(() => {
       void request<{
-        items: { path: string; error?: string; warning?: string }[];
+        items: {
+          path: string;
+          error?: string;
+          warning?: string;
+          advice?: string;
+        }[];
       }>("POST", "/roots/inspect", {
         items: entries.map(({ path, name }) => ({
           path,
@@ -89,6 +95,8 @@ export function DirectoryBatchDialog({ onClose }: { onClose: () => void }) {
                   ?.error,
                 warning: result.items.find((item) => item.path === entry.path)
                   ?.warning,
+                advice: result.items.find((item) => item.path === entry.path)
+                  ?.advice,
               })),
             );
         })
@@ -262,6 +270,7 @@ export function DirectoryBatchDialog({ onClose }: { onClose: () => void }) {
                   {entry.error}
                 </p>
               )}
+              {entry.advice && <p className="muted">{entry.advice}</p>}
               {entry.warning && (
                 <p className="notice">
                   {entry.warning}：默认将跳过，可在自定义规则中调整。

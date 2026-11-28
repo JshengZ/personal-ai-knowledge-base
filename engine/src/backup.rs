@@ -63,6 +63,7 @@ fn export_locked(state: &AppState) -> Result<Vec<u8>> {
         settings.chat.credential_id = None;
         settings.embedding.credential_id = None;
         settings.rerank.credential_id = None;
+        settings.migrate_policy();
         settings.paused = true;
         snapshot.execute(
             "UPDATE metadata SET value=?1 WHERE key='settings'",
@@ -140,6 +141,7 @@ fn normalize_restore(source: &Sqlite, source_path: &std::path::Path, target_path
     let raw: String = source.query_row("SELECT value FROM metadata WHERE key='settings'", [], |row| row.get(0))
         .context("备份缺少知识库设置，当前知识库未修改")?;
     let mut settings: Settings = serde_json::from_str(&raw).context("备份中的设置格式无效，当前知识库未修改")?;
+    settings.migrate_policy();
     settings.paused = true;
     for provider in [&mut settings.chat, &mut settings.embedding, &mut settings.rerank] { provider.has_key = false; provider.credential_id = None; }
     let normalized = crate::store::Store::open(target_path)?;
@@ -206,7 +208,7 @@ pub async fn restore(state: &Arc<AppState>, bytes: Vec<u8>) -> Result<serde_json
     let input = Sqlite::open_with_flags(&temporary, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let integrity: String = input.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
     let version: i64 = input.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    if integrity != "ok" || !(1..=2).contains(&version) { bail!("备份完整性或数据库版本检查失败，当前知识库未修改"); }
+    if integrity != "ok" || !(1..=3).contains(&version) { bail!("备份完整性或数据库版本检查失败，当前知识库未修改"); }
     normalize_restore(&input, &temporary, &normalized, &namespace)?;
     drop(input);
     let source = Sqlite::open(&normalized)?;
@@ -218,11 +220,13 @@ pub async fn restore(state: &Arc<AppState>, bytes: Vec<u8>) -> Result<serde_json
     let recovery = export_locked(state)?;
     let recovery_path = state.home.join("backups").join(format!("before-restore-{}.pkb", identifier()));
     private_write(&recovery_path, &recovery)?;
+    state.store.invalidate_readers();
     {
         let mut target = state.store.connection.lock().unwrap();
         let backup = Backup::new(&source, &mut target)?;
         backup.run_to_completion(100, Duration::from_millis(10), None)?;
     }
+    state.store.invalidate_readers();
     state.store.reload_clients()?;
     // All normalization was completed before the atomic copy, so a subsequent
     // log failure must not turn a completed restore into a false failure.

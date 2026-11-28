@@ -75,6 +75,114 @@ fn fixture() -> (
     (directory, state, root, project, document, chunk)
 }
 
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn queries_use_wal_readers_and_reserved_fts_when_writes_and_semantic_lanes_are_busy() {
+    let (_directory,state,_root,_project,_document,_chunk)=fixture();
+    let (ready,held)=std::sync::mpsc::channel();
+    let (release,wait)=std::sync::mpsc::channel();
+    let locked=state.clone();
+    let writer=std::thread::spawn(move||{let _write=locked.store.connection.lock().unwrap();ready.send(()).unwrap();let _=wait.recv_timeout(std::time::Duration::from_secs(10));});
+    held.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+    let lanes=state.query_lanes.clone().acquire_many_owned(6).await.unwrap();
+    let result=tokio::time::timeout(std::time::Duration::from_secs(2),crate::queries::run(state.clone(),Scope::Owner,"search".into(),json!({"query":"LightGBM"}),crate::queries::RequestLife::new())).await;
+    release.send(()).unwrap();writer.join().unwrap();drop(lanes);
+    let value=result.expect("FTS must not wait for the writer mutex").unwrap();
+    assert_eq!(value["mode"],"keyword");assert_eq!(value["hits"].as_array().unwrap().len(),1);
+}
+
+#[test]
+fn quiet_jobs_coalesce_observations_and_cannot_lose_a_newer_change() {
+    let (_directory,state,root,document_project,document,_chunk)=fixture();
+    assert!(state.store.enqueue_observed(&document.path,&root.id,false,"first-edit",300).unwrap());
+    assert!(state.store.next_job_generation().unwrap().is_none());
+    assert!(!state.store.enqueue_observed(&document.path,&root.id,false,"first-edit",300).unwrap());
+    assert!(state.store.enqueue_observed(&document.path,&root.id,false,"second-edit",600).unwrap());
+    state.store.finish_generation(&document.path,&root.id,1).unwrap();
+    state.store.retry_generation(&document.path,1,9).unwrap();
+    let (generation,attempts,remaining):(i64,i64,i64)=state.store.connection.lock().unwrap().query_row("SELECT generation,attempts,available_at-unixepoch() FROM jobs WHERE path=?1",[&document.path],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
+    assert_eq!((generation,attempts),(2,0));assert!(remaining>=598);
+    state.store.connection.lock().unwrap().execute("UPDATE jobs SET available_at=unixepoch()-1",[]).unwrap();
+    assert_eq!(state.store.next_job_generation().unwrap().unwrap().4,2);
+    state.store.finish_generation(&document.path,&root.id,2).unwrap();
+    assert_eq!(state.store.pending_jobs().unwrap(),0);
+    assert_eq!(state.store.project(&document_project.id).unwrap().id,document_project.id);
+}
+
+#[test]
+fn stable_chunks_keep_ids_across_insertions_moves_and_duplicate_text() {
+    let (_directory,_state,_root,_project,document,chunk)=fixture();
+    let mut twin=chunk.clone();twin.id="second-occurrence".into();twin.ordinal=1;
+    let previous=vec![chunk.clone(),twin.clone()];
+    let mut inserted=chunk.clone();inserted.text="A newly inserted paragraph".into();
+    let mut changed=vec![inserted,chunk.clone(),twin];
+    crate::indexer::reuse_chunk_ids(&document.id,&previous,&mut changed);
+    assert_eq!(changed[1].id,previous[0].id);assert_eq!(changed[2].id,previous[1].id);
+    assert_ne!(changed[0].id,changed[1].id);assert_ne!(changed[0].id,changed[2].id);
+}
+
+#[test]
+fn partial_cleanup_of_duplicate_chunks_can_restore_every_occurrence_without_collisions() {
+    let (_directory,state,_root,_project,mut document,chunk)=fixture();
+    let mut original=(0..350).map(|ordinal|{let mut next=chunk.clone();next.ordinal=ordinal;next}).collect::<Vec<_>>();
+    crate::indexer::reuse_chunk_ids(&document.id,&[],&mut original);
+    let surviving=original[64..].to_vec();
+    let mut restored=original.clone();
+    crate::indexer::reuse_chunk_ids(&document.id,&surviving,&mut restored);
+    assert_eq!(restored.iter().map(|chunk|&chunk.id).collect::<std::collections::HashSet<_>>().len(),350);
+    document.chunks=350;
+    state.store.replace_document(&document,&restored).unwrap();
+    assert_eq!(state.store.chunks(&document.id).unwrap().len(),350);
+    let duplicate=vec![restored[0].clone(),restored[0].clone()];
+    assert!(state.store.replace_document(&document,&duplicate).is_err());
+    assert_eq!(state.store.chunks(&document.id).unwrap().len(),350,"a failed write must leave the prior version intact");
+}
+
+#[tokio::test]
+async fn restore_invalidates_pooled_and_late_returned_readers() {
+    let (_directory,state,_root,_project,_document,_chunk)=fixture();
+    let bytes=backup::export(&state).await.unwrap();
+    let old_reader=state.store.reader_budget(30).unwrap();
+    assert_eq!(old_reader.query_row("SELECT count(*) FROM roots",[],|row|row.get::<_,i64>(0)).unwrap(),1);
+    backup::restore(&state,bytes).await.unwrap();
+    drop(old_reader);
+    for _ in 0..10 {assert!(state.store.settings().unwrap().paused);}
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn a_large_document_list_is_complete_with_stable_pagination_and_reserved_ui_read_capacity() {
+    use tower::ServiceExt;
+    let (_directory,state,root,_project,document,_chunk)=fixture();
+    {
+        let mut db=state.store.connection.lock().unwrap();let transaction=db.transaction().unwrap();
+        for index in 0..23000 {
+            let mut next=document.clone();next.id=format!("bulk-{index:05}");next.title=format!("file-{index:05}.md");next.path=format!("{}/{}",root.path,next.title);
+            transaction.execute("INSERT INTO documents(id,path,root_id,project_id,version,status,data) VALUES(?1,?2,?3,?4,?5,'ready',?6)",rusqlite::params![next.id,next.path,next.root_id,next.project_id,next.version,serde_json::to_string(&next).unwrap()]).unwrap();
+        }
+        transaction.commit().unwrap();
+    }
+    let router=crate::api::router(state.clone(),"list-test-owner".into(),17481);
+    let _writers=state.requests.clone().acquire_many_owned(8).await.unwrap();
+    let mut all=std::collections::HashSet::new();
+    for offset in [0,200,400] {
+        let request=axum::http::Request::builder().uri(format!("/api/documents?offset={offset}&limit=200")).header("Authorization","Bearer list-test-owner").body(axum::body::Body::empty()).unwrap();
+        let response=tokio::time::timeout(std::time::Duration::from_secs(10),router.clone().oneshot(request)).await.expect("a list read must finish within the UI deadline").unwrap();
+        assert!(response.status().is_success());
+        let result:serde_json::Value=serde_json::from_slice(&axum::body::to_bytes(response.into_body(),16*1024*1024).await.unwrap()).unwrap();
+        assert_eq!(result["total"],23001);assert_eq!(result["documents"].as_array().unwrap().len(),200);
+        for document in result["documents"].as_array().unwrap() {assert!(all.insert(document["id"].as_str().unwrap().to_string()),"stable pages must not repeat rows");}
+    }
+}
+
+#[test]
+fn enterprise_proxy_bypasses_support_windows_patterns_and_always_keep_loopback_direct() {
+    use crate::network::{Routes,ProxySettings};
+    let routes=Routes{http:"http://env-proxy.invalid:8080".into(),system:ProxySettings{server:"http=system.invalid:80;https=secure.invalid:443".into(),bypass:"100.10*;*.corp.test;<local>;192.168.0.0/16".into(),automatic:false},..Default::default()};
+    for address in ["http://127.0.0.1:17481","http://[::1]:17481","http://localhost:17481","http://100.100.2.3/v1","http://model.corp.test","http://intranet","http://192.168.1.2"] {assert!(routes.proxy(&url::Url::parse(address).unwrap()).is_none(),"{address}");}
+    assert_eq!(routes.proxy(&url::Url::parse("http://external.test").unwrap()).as_deref(),Some("http://env-proxy.invalid:8080"));
+    assert_eq!(routes.proxy(&url::Url::parse("https://external.test").unwrap()).as_deref(),Some("http://secure.invalid:443"));
+    assert!(!crate::network::bypass_matches("100.10*",&url::Url::parse("http://100.20.1.2").unwrap()));
+}
+
 #[test]
 fn deleting_a_source_removes_search_rows_and_invalidates_dependent_memory() {
     let (_directory, state, root, project, document, chunk) = fixture();
@@ -531,6 +639,10 @@ fn counters_follow_reindex_model_changes_and_deletions_without_full_scans() {
         .store
         .replace_document(&document, &[chunk.clone()])
         .unwrap();
+    assert_eq!(state.store.stats().unwrap()["vectors"], 1,"unchanged chunks retain their vectors");
+    assert!(state.store.pending_embeddings("model-two",32,false,0).unwrap().1.is_empty());
+    let mut changed=chunk.clone();changed.id=identifier();changed.text="Updated source text".into();
+    state.store.replace_document(&document,&[changed]).unwrap();
     assert_eq!(state.store.stats().unwrap()["vectors"], 0);
     assert_eq!(state.store.stats().unwrap()["chunks"], 1);
     let results = state

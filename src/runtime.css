@@ -1,0 +1,87 @@
+.runtime-status {
+  margin: 0 0 24px;
+  border-block: 1px solid var(--line);
+  font-size: 0.875rem;
+}
+.runtime-status > details > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 14px 0;
+  cursor: pointer;
+}
+.runtime-status > details > summary::before {
+  display: none;
+}
+.runtime-status summary .muted {
+  margin-left: auto;
+}
+.runtime-chevron {
+  flex-shrink: 0;
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+.runtime-status details[open] .runtime-chevron {
+  transform: rotate(180deg);
+}
+.runtime-details {
+  padding: 4px 0 16px;
+  display: grid;
+  gap: 16px;
+}
+.runtime-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 24px;
+  margin: 0;
+}
+.runtime-metrics dt {
+  color: var(--muted);
+  margin-bottom: 5px;
+}
+.runtime-metrics dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.6;
+}
+.runtime-tasks {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+.runtime-tasks li {
+  display: grid;
+  grid-template-columns: 6rem minmax(0, 1fr);
+  gap: 10px;
+  line-height: 1.6;
+}
+.runtime-tasks span {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+}
+.runtime-status > .notice {
+  margin-bottom: 16px;
+}
+@media (max-width: 720px) {
+  .runtime-metrics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .runtime-tasks li {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+}
+
+.modal-body fieldset.connection-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+  display: grid;
+  gap: 20px;
+}

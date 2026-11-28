@@ -28,6 +28,7 @@ import {
   scopeParameters,
   validScope,
 } from "../components/ScopePicker";
+import { ServiceStatus } from "../components/ServiceStatus";
 import { IndexProgress } from "../components/IndexProgress";
 
 const statusNames: Record<string, string> = {
@@ -62,7 +63,6 @@ export function Sources() {
   const deferred = useDeferredValue(query);
   const [scope, setScope] = useState("");
   const effectiveScope = validScope(scope, data) ? scope : "";
-  const generation = useRef(0);
   const [excluding, setExcluding] = useState<Document | null>(null);
   const [excludeScope, setExcludeScope] = useState("file");
   const [status, setStatus] = useState("");
@@ -72,63 +72,117 @@ export function Sources() {
   const [removing, setRemoving] = useState<Root | null>(null);
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState("");
-  const load = async (offset = 0) => {
-    const parameters = new URLSearchParams({
-      offset: String(offset),
-      limit: "100",
-    });
-    for (const [key, value] of Object.entries(scopeParameters(effectiveScope)))
-      parameters.set(key, value);
-    if (deferred) parameters.set("query", deferred);
-    if (status) parameters.set("status", status);
-    const current = generation.current;
-    const result = await request<{ documents: Document[]; total: number }>(
-      "GET",
-      "/documents?" + parameters,
-    );
-    if (current !== generation.current) return;
-    setDocuments((previous) =>
-      offset ? [...previous, ...result.documents] : result.documents,
-    );
-    setTotal(result.total);
-  };
-  useEffect(() => {
-    let current = true;
-    generation.current++;
-    const parameters = new URLSearchParams({
-      limit: "100",
-      ...scopeParameters(effectiveScope),
-      ...(deferred ? { query: deferred } : {}),
-      ...(status ? { status } : {}),
-    });
-    request<{ documents: Document[]; total: number }>(
-      "GET",
-      "/documents?" + parameters,
-    )
-      .then((result) => {
-        if (current) {
-          setDocuments(result.documents);
-          setTotal(result.total);
-          setLoadError("");
-        }
-      })
-      .catch((error) => {
-        if (current) setLoadError(error.message);
-      });
-    return () => {
-      current = false;
-    };
-  }, [
+  const [loading, setLoading] = useState(false);
+  const [expanding, setExpanding] = useState(false);
+  const [refreshCount, setRefreshCount] = useState(0);
+  const visibleCount = useRef(100);
+  const filterKey = JSON.stringify([
     effectiveScope,
     deferred,
+    status,
+    data.library_revision,
+  ]);
+  const currentFilter = useRef("");
+  const mounted = useRef(true);
+  const running = useRef(false);
+  const pending = useRef<{
+    key: string;
+    parameters: URLSearchParams;
+    count: number;
+  } | null>(null);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (currentFilter.current !== filterKey) {
+      currentFilter.current = filterKey;
+      visibleCount.current = 100;
+      setDocuments([]);
+      setTotal(0);
+      setLoadError("");
+      setExpanding(false);
+    }
+    pending.current = {
+      key: filterKey,
+      parameters: new URLSearchParams({
+        ...scopeParameters(effectiveScope),
+        ...(deferred ? { query: deferred } : {}),
+        ...(status ? { status } : {}),
+      }),
+      count: visibleCount.current,
+    };
+    if (running.current) return;
+    running.current = true;
+    setLoading(true);
+    // Coalesce background refreshes. A slow IPC request cannot be aborted, so
+    // finish it before starting the latest refresh instead of piling up calls.
+    void (async () => {
+      while (pending.current && mounted.current) {
+        const next = pending.current;
+        pending.current = null;
+        try {
+          const rows: Document[] = [];
+          let available = 0;
+          for (let offset = 0; offset < next.count; offset += 200) {
+            const parameters = new URLSearchParams(next.parameters);
+            parameters.set("offset", String(offset));
+            parameters.set("limit", String(Math.min(200, next.count - offset)));
+            const result = await request<{
+              documents: Document[];
+              total: number;
+            }>("GET", "/documents?" + parameters);
+            rows.push(...result.documents);
+            available = result.total;
+            if (
+              offset + result.documents.length >= available ||
+              !result.documents.length
+            )
+              break;
+            if (!mounted.current || currentFilter.current !== next.key) break;
+          }
+          if (mounted.current && currentFilter.current === next.key) {
+            setDocuments([
+              ...new Map(rows.map((row) => [row.id, row])).values(),
+            ]);
+            setTotal(available);
+            setLoadError("");
+            if (rows.length >= visibleCount.current || rows.length >= available)
+              setExpanding(false);
+          }
+        } catch (error) {
+          if (mounted.current && currentFilter.current === next.key) {
+            setLoadError(
+              error instanceof Error ? error.message : "资料列表加载失败",
+            );
+            setExpanding(false);
+          }
+        }
+      }
+    })().finally(() => {
+      running.current = false;
+      if (mounted.current) setLoading(false);
+    });
+  }, [
+    filterKey,
+    effectiveScope,
+    deferred,
+    status,
     data.library_revision,
     data.stats.cleaning,
     data.stats.documents,
-    status,
     data.last_indexed,
     data.last_scan,
     data.stats.pending,
+    refreshCount,
   ]);
+  const loadMore = () => {
+    setExpanding(true);
+    visibleCount.current = Math.max(100, documents.length) + 100;
+    setRefreshCount((value) => value + 1);
+  };
   const action = async (callback: () => Promise<unknown>, message?: string) => {
     setBusy(true);
     try {
@@ -154,6 +208,7 @@ export function Sources() {
         </button>
       </header>
       <IndexProgress data={data} onSettings={() => navigate("settings")} />
+      <ServiceStatus />
       {!!data.format_warnings?.length && (
         <details className="notice">
           <summary>发现暂不支持的 Office 文件格式，尚未进入索引</summary>
@@ -271,6 +326,15 @@ export function Sources() {
           {loadError && (
             <p className="notice error" role="alert">
               {loadError}
+              {documents.length ? "。已保留上次加载的资料。" : ""}
+              <button
+                type="button"
+                className="text-action"
+                disabled={expanding}
+                onClick={() => setRefreshCount((value) => value + 1)}
+              >
+                重试
+              </button>
             </p>
           )}
           {documents.length ? (
@@ -347,27 +411,33 @@ export function Sources() {
             </div>
           ) : (
             <Empty
-              title={query || status ? "没有符合条件的文件" : "暂无资料"}
+              title={
+                loadError
+                  ? "资料暂未加载"
+                  : loading
+                    ? "正在读取资料"
+                    : query || status
+                      ? "没有符合条件的文件"
+                      : "暂无资料"
+              }
               action={
-                !data.roots.length ? (
+                !loadError && !loading && !data.roots.length ? (
                   <button onClick={addRoot}>选择资料目录</button>
                 ) : undefined
               }
             >
-              {data.stats.pending
-                ? "正在处理文件，完成后会显示在这里。"
-                : "可以添加目录，或调整当前筛选条件。"}
+              {loadError
+                ? "请重试加载。已构建的索引不会因此丢失。"
+                : loading
+                  ? "正在读取文件列表。"
+                  : data.stats.pending
+                    ? "正在处理文件，完成后会显示在这里。"
+                    : "可以添加目录，或调整当前筛选条件。"}
             </Empty>
           )}
           {documents.length < total && (
-            <button
-              onClick={() =>
-                void load(documents.length).catch((error) =>
-                  notify(error.message, true),
-                )
-              }
-            >
-              加载更多
+            <button onClick={loadMore} disabled={expanding}>
+              {expanding ? "正在加载" : "加载更多"}
             </button>
           )}
         </>
@@ -430,6 +500,18 @@ export function Sources() {
                       </details>
                     );
                   })()}
+                {data.projects.filter((project) => project.root_id === root.id)
+                  .length >= 20 && (
+                  <p className="notice">
+                    此集合已识别{" "}
+                    {
+                      data.projects.filter(
+                        (project) => project.root_id === root.id,
+                      ).length
+                    }{" "}
+                    个项目。请检查是否包含插件、依赖或临时目录；可在管理目录中调整排除范围。
+                  </p>
+                )}
                 <div className="actions">
                   <button
                     className="text-action"

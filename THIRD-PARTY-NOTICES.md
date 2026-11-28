@@ -495,3 +495,5 @@ Windows 随包 llama.cpp 从 b12711 源码静态构建，禁用 OpenSSL、OpenMP
 | zstd-sys | 2.2.0+zstd.1.6.0 | BSD-3-Clause AND BSD-2-Clause |
 
 组件源码地址与版本记录见 licenses/components.json。Electron 自身包含 Chromium 与其他基础库的许可证清单。
+
+Component source repositories and versions are listed in `licenses/components.json`. Electron includes its own Chromium and bundled-library license inventory.

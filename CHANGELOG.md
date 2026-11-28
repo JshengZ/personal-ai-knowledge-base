@@ -1,5 +1,16 @@
 # Changelog / 更新日志
 
+## 1.1.0 — 2026-11-28
+
+- Isolate WAL query reads, reserve full-text capacity, unify headless MCP execution and align query/write deadlines.
+- Coalesce native file events with quiet time, durable job generations and unchanged-vector reuse; recover every repeated chunk after partial cleanup.
+- Preserve expanded library pagination and previous results on failure; invalidate pooled readers during online restore.
+- Add runtime diagnostics, accurate upstream/audit errors, Windows system proxy/direct controls, process roles and one version source including PE metadata.
+- Require an explicit sharing scope for new connections; retain existing permissions and opt-in continuous sharing.
+- 查询与索引隔离、预留全文通道、无界面 MCP、超时对齐；静默合并与增量监听、复用向量；资料分页／恢复一致性；运行状态、代理、错误与进程版本；新连接明确授权范围。
+
+[Full release notes / 完整说明](docs/releases/v1.1.0.md)
+
 ## 1.0.2 — 2026-11-27
 
 - Named source collections retain user names independently of detected projects. File/search scopes include whole collections and subprojects; removal clears selectors and retrieval immediately and archives authored project context.

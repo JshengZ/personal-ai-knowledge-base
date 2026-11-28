@@ -1,4 +1,5 @@
 import test from "node:test";
+import { interceptRequests } from "./ipc-requests.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -116,16 +117,14 @@ test(
       await app.evaluate(({ dialog }) => {
         globalThis.__guideWrites = [];
         globalThis.__guideChoosers = 0;
-        const original = globalThis.fetch;
-        globalThis.fetch = async (input, options) => {
-          if (options?.method && options.method !== "GET")
-            globalThis.__guideWrites.push(new URL(String(input)).pathname);
-          return original(input, options);
-        };
         dialog.showOpenDialog = async () => {
           globalThis.__guideChoosers++;
           return { canceled: true, filePaths: [] };
         };
+      });
+      await interceptRequests(app, async ({ method, path }, next) => {
+        if (method !== "GET") globalThis.__guideWrites.push("/api" + path);
+        return next();
       });
       await page.setViewportSize({ width: 1212, height: 840 });
       await page.getByRole("button", { name: "使用指南", exact: true }).click();
@@ -228,22 +227,18 @@ test(
       assert.equal(await key.inputValue(), "synthetic-unsaved-guide-key");
       assert.equal((await api("GET", "/state")).settings.chat.model, "");
       await app.evaluate(() => {
-        const original = globalThis.fetch;
-        let fail = true;
-        globalThis.fetch = async (input, options) => {
-          if (
-            fail &&
-            String(input).endsWith("/api/onboarding") &&
-            options?.method === "PATCH"
-          ) {
-            fail = false;
-            return new Response(
-              JSON.stringify({ error: "Synthetic guide save failure" }),
-              { status: 503, headers: { "Content-Type": "application/json" } },
-            );
-          }
-          return original(input, options);
-        };
+        globalThis.__failGuideSave = true;
+      });
+      await interceptRequests(app, async ({ method, path }, next) => {
+        if (
+          globalThis.__failGuideSave &&
+          path === "/onboarding" &&
+          method === "PATCH"
+        ) {
+          globalThis.__failGuideSave = false;
+          throw new Error("Synthetic guide save failure");
+        }
+        return next();
       });
       await page.getByRole("button", { name: "使用指南", exact: true }).click();
       await page.locator('.tour-card[data-positioned="true"]').waitFor();
@@ -391,12 +386,10 @@ test(
       assert.ok(project);
       await app.evaluate(() => {
         globalThis.__guideAskCalls = [];
-        const original = globalThis.fetch;
-        globalThis.fetch = async (input, options) => {
-          if (String(input).endsWith("/api/ask"))
-            globalThis.__guideAskCalls.push(JSON.parse(options.body));
-          return original(input, options);
-        };
+      });
+      await interceptRequests(app, async ({ path, body }, next) => {
+        if (path === "/ask") globalThis.__guideAskCalls.push(body);
+        return next();
       });
       await page.getByRole("button", { name: "使用指南", exact: true }).click();
       for (let n = 0; n < 4; n++)

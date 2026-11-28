@@ -4,6 +4,7 @@ import { createReadStream, existsSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { listPackage } from "@electron/asar";
+import { execFileSync } from "node:child_process";
 
 const windows = ["win", "win32"].includes(process.argv[2]);
 const platform = windows ? "win-x64" : "mac-" + process.arch;
@@ -59,6 +60,39 @@ assert.equal(
   "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439",
 );
 const executable = windows ? "knowledge-engine.exe" : "knowledge-engine";
+const expectedVersion = JSON.parse(
+  await readFile("package.json", "utf8"),
+).version;
+assert.equal(
+  execFileSync(join(resources, "engine", executable), ["--version"], {
+    encoding: "utf8",
+  }).trim(),
+  "knowledge-engine " + expectedVersion,
+);
+if (windows && process.platform === "win32") {
+  const metadata = JSON.parse(
+    execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "(Get-Item -LiteralPath $env:PKB_VERSION_ENGINE).VersionInfo | Select-Object ProductVersion,FileVersion,ProductName,FileDescription | ConvertTo-Json -Compress",
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PKB_VERSION_ENGINE: join(resources, "engine", executable),
+        },
+      },
+    ),
+  );
+  assert.equal(metadata.ProductVersion, expectedVersion);
+  assert.equal(metadata.FileVersion, expectedVersion);
+  assert.equal(metadata.ProductName, "Personal Knowledge");
+  assert.match(metadata.FileDescription, /Knowledge Engine/);
+}
 assert.deepEqual(await readdir(join(resources, "engine")), [executable]);
 const candidates = (
   windows

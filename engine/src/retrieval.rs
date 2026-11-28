@@ -37,6 +37,10 @@ pub async fn search(
     scope: &Scope,
     request: &SearchRequest,
 ) -> Result<SearchResponse> {
+    search_mode(state,scope,request,false).await
+}
+
+pub async fn search_mode(state:&Arc<AppState>,scope:&Scope,request:&SearchRequest,keyword_only:bool)->Result<SearchResponse> {
     if request.query.trim().is_empty() {
         bail!("请输入问题或关键词");
     }
@@ -67,7 +71,9 @@ pub async fn search(
     let mut mode = "keyword".to_string();
     let mut notice = None;
     let semantic = crate::progress::snapshot(state, &settings)?;
-    if semantic.protected {
+    if keyword_only {
+        notice=Some("查询繁忙，已使用预留通道返回全文检索结果。".into());
+    } else if semantic.protected {
         notice = semantic.notice;
     } else if state.embedding_busy.load(Ordering::SeqCst)
         && !crate::models::Models::remote_embeddings(&settings)
@@ -108,6 +114,7 @@ pub async fn search(
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
     let mut hits = vec![];
     for (id, score) in ranked {
+        crate::queries::check()?;
         let Ok(mut hit) = state.store.hit(&id) else {
             continue;
         };
@@ -133,7 +140,7 @@ pub async fn search(
         hit.score = score;
         hits.push(hit);
     }
-    if settings.rerank_enabled && !settings.rerank.base_url.is_empty() && !hits.is_empty() {
+    if !keyword_only && settings.rerank_enabled && !settings.rerank.base_url.is_empty() && !hits.is_empty() {
         let mut allowed = vec![];
         for hit in hits.iter().take(40) {
             let document = state.store.document(&hit.document_id)?;
@@ -215,7 +222,11 @@ pub async fn context(
     scope: &Scope,
     request: &SearchRequest,
 ) -> Result<Value> {
-    let mut search = search(state, scope, request).await?;
+    context_mode(state,scope,request,false).await
+}
+
+pub async fn context_mode(state:&Arc<AppState>,scope:&Scope,request:&SearchRequest,keyword_only:bool)->Result<Value> {
+    let mut search = search_mode(state, scope, request,keyword_only).await?;
     search.hits.retain(|hit| {
         state
             .store
@@ -243,7 +254,6 @@ pub async fn context(
         project_list.retain(|project| project["id"] == *id);
     }
     if let Some(id) = &request.collection_id { project_list.retain(|project|project["collection_id"]==*id); }
-    state.audit(scope, "get_context", search.hits.len());
     Ok(json!({
         "query":request.query,"mode":search.mode,"notice":search.notice,
         "sources":search.hits,"projects":project_list,"confirmed_memories":memories,
@@ -274,7 +284,6 @@ pub fn read_source(state: &AppState, scope: &Scope, request: &ReadRequest) -> Re
         .skip(request.offset.unwrap_or_default())
         .take(request.limit.unwrap_or(8).clamp(1, 30))
         .collect();
-    state.audit(scope, "read_source", chunks.len());
     Ok(
         json!({"document":document,"chunks":chunks,"total":total,"offset":request.offset.unwrap_or_default()}),
     )
@@ -369,6 +378,14 @@ pub fn propose(state: &AppState, scope: &Scope, request: ProposeRequest) -> Resu
             location: None,
         });
     }
+    evidence.sort_by(|a,b|a.document_id.cmp(&b.document_id));evidence.dedup_by(|a,b|a.document_id==b.document_id);
+    if let Scope::Agent(client)=scope {
+        let key=blake3::hash(format!("{}:{}:{}:{}:{}",client.id,request.content.trim(),request.category,request.project_id.as_deref().unwrap_or_default(),serde_json::to_string(&evidence)?).as_bytes()).to_hex().to_string();
+        let marker=json!({"proposal_key":key});
+        if let Some(memory)=state.store.memories()?.into_iter().find(|memory|memory.status=="pending" && memory.history.iter().any(|entry|entry.get("proposal_key")==marker.get("proposal_key"))) { return Ok(memory); }
+    }
+    crate::queries::check()?;
+    let history=match scope { Scope::Agent(client)=>vec![json!({"proposal_key":blake3::hash(format!("{}:{}:{}:{}:{}",client.id,request.content.trim(),request.category,request.project_id.as_deref().unwrap_or_default(),serde_json::to_string(&evidence)?).as_bytes()).to_hex().to_string()})],Scope::Owner=>vec![] };
     let memory = Memory {
         id: identifier(),
         content: request.content.trim().into(),
@@ -382,9 +399,8 @@ pub fn propose(state: &AppState, scope: &Scope, request: ProposeRequest) -> Resu
         },
         created_at: timestamp(),
         updated_at: timestamp(),
-        history: vec![],
+        history,
     };
     state.store.save_memory(&memory)?;
-    state.audit(scope, "propose_memory", 1);
     Ok(memory)
 }

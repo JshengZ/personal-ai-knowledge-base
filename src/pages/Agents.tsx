@@ -219,18 +219,20 @@ export function ConnectionEditor({
   const { data, refresh, notify } = useKnowledge();
   const [name, setName] = useState(connection?.name || "ZCode");
   const [kind, setKind] = useState(connection?.kind || "zcode");
-  const [scopeMode, setScopeMode] = useState<"all" | "selected">(
-    connection?.scope_mode || (connection ? "selected" : "all"),
+  const [scopeMode, setScopeMode] = useState<"" | "all" | "selected">(
+    connection?.scope_mode || (connection ? "selected" : ""),
   );
-  const [projects, setProjects] = useState(
-    connection?.project_ids || data.projects.map((project) => project.id),
-  );
+  const [projects, setProjects] = useState(connection?.project_ids || []);
   const [profile, setProfile] = useState(connection?.include_profile || false);
   const [propose, setPropose] = useState(connection?.can_propose || false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const submit = async (event: FormEvent) => {
     event.preventDefault();
+    if (!scopeMode) {
+      setError("请选择共享范围");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -270,111 +272,118 @@ export function ConnectionEditor({
       onSubmit={submit}
       submitLabel={connection ? "保存权限" : "生成连接"}
       busy={busy}
+      submitDisabled={!scopeMode}
     >
-      <label>
-        连接名称
-        <input
-          value={name}
-          maxLength={60}
-          required
-          onChange={(event) => setName(event.target.value)}
-        />
-      </label>
-      {!connection && (
+      <fieldset className="connection-fields" disabled={busy}>
         <label>
-          客户端
+          连接名称
+          <input
+            value={name}
+            maxLength={60}
+            required
+            onChange={(event) => setName(event.target.value)}
+          />
+        </label>
+        {!connection && (
+          <label>
+            客户端
+            <Select
+              aria-label="客户端"
+              value={kind}
+              onChange={(event) => {
+                setKind(event.target.value);
+                setName(
+                  (
+                    {
+                      zcode: "ZCode",
+                      codex: "Codex",
+                      claude: "Claude Code",
+                      other: "我的 Agent",
+                    } as Record<string, string>
+                  )[event.target.value],
+                );
+              }}
+            >
+              <option value="zcode">ZCode</option>
+              <option value="codex">Codex</option>
+              <option value="claude">Claude Code</option>
+              <option value="other">其他支持 MCP 的 Agent</option>
+            </Select>
+          </label>
+        )}
+        <label>
+          共享范围
           <Select
-            aria-label="客户端"
-            value={kind}
-            onChange={(event) => {
-              setKind(event.target.value);
-              setName(
-                (
-                  {
-                    zcode: "ZCode",
-                    codex: "Codex",
-                    claude: "Claude Code",
-                    other: "我的 Agent",
-                  } as Record<string, string>
-                )[event.target.value],
-              );
-            }}
+            aria-label="共享范围"
+            required
+            value={scopeMode}
+            onChange={(event) =>
+              setScopeMode(event.target.value as "" | "all" | "selected")
+            }
           >
-            <option value="zcode">ZCode</option>
-            <option value="codex">Codex</option>
-            <option value="claude">Claude Code</option>
-            <option value="other">其他支持 MCP 的 Agent</option>
+            <option value="" disabled>
+              请选择共享范围
+            </option>
+            <option value="all">自动共享（含后续新增资料）</option>
+            <option value="selected">仅指定项目</option>
           </Select>
         </label>
-      )}
-      <label>
-        共享范围
-        <Select
-          aria-label="共享范围"
-          value={scopeMode}
-          onChange={(event) =>
-            setScopeMode(event.target.value as "all" | "selected")
-          }
-        >
-          <option value="all">自动共享（含后续新增资料）</option>
-          <option value="selected">仅指定项目</option>
-        </Select>
-      </label>
-      {scopeMode === "all" && (
+        {scopeMode === "all" && (
+          <p className="muted">
+            自动读取允许 Agent
+            使用的资料集合，新文件与新项目会自动纳入。仅本机或仅窗口使用的资料继续按原设置处理。
+          </p>
+        )}
+        {scopeMode === "selected" && (
+          <fieldset>
+            <legend>允许读取的项目</legend>
+            {data.projects.length ? (
+              data.projects.map((project) => (
+                <label className="checkbox-label" key={project.id}>
+                  <input
+                    type="checkbox"
+                    checked={projects.includes(project.id)}
+                    onChange={(event) =>
+                      setProjects((previous) =>
+                        event.target.checked
+                          ? [...previous, project.id]
+                          : previous.filter((id) => id !== project.id),
+                      )
+                    }
+                  />
+                  {project.name}
+                </label>
+              ))
+            ) : (
+              <p className="muted">添加资料目录后，可以回来选择项目。</p>
+            )}
+          </fieldset>
+        )}
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={profile}
+            onChange={(event) => setProfile(event.target.checked)}
+          />
+          共享已确认的个人记忆
+        </label>
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={propose}
+            onChange={(event) => setPropose(event.target.checked)}
+          />
+          允许 Agent 提交记忆建议，等待我确认
+        </label>
         <p className="muted">
-          自动读取允许 Agent
-          使用的资料集合，新文件与新项目会自动纳入。仅本机或仅窗口使用的资料继续按原设置处理。
+          目录设为“允许公司模型与 Agent”后，连接才能读取其中的资料。
         </p>
-      )}
-      {scopeMode === "selected" && (
-        <fieldset>
-          <legend>允许读取的项目</legend>
-          {data.projects.length ? (
-            data.projects.map((project) => (
-              <label className="checkbox-label" key={project.id}>
-                <input
-                  type="checkbox"
-                  checked={projects.includes(project.id)}
-                  onChange={(event) =>
-                    setProjects((previous) =>
-                      event.target.checked
-                        ? [...previous, project.id]
-                        : previous.filter((id) => id !== project.id),
-                    )
-                  }
-                />
-                {project.name}
-              </label>
-            ))
-          ) : (
-            <p className="muted">添加资料目录后，可以回来选择项目。</p>
-          )}
-        </fieldset>
-      )}
-      <label className="checkbox-label">
-        <input
-          type="checkbox"
-          checked={profile}
-          onChange={(event) => setProfile(event.target.checked)}
-        />
-        共享已确认的个人记忆
-      </label>
-      <label className="checkbox-label">
-        <input
-          type="checkbox"
-          checked={propose}
-          onChange={(event) => setPropose(event.target.checked)}
-        />
-        允许 Agent 提交记忆建议，等待我确认
-      </label>
-      <p className="muted">
-        目录设为“允许公司模型与 Agent”后，连接才能读取其中的资料。
-      </p>
-      {error && (
-        <p className="form-error" role="alert">
-          {error}
-        </p>
-      )}
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
+      </fieldset>
     </Modal>
   );
 }

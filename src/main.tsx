@@ -6,6 +6,7 @@ import { AppearanceProvider } from "./appearance";
 import "./styles.css";
 import "./controls.css";
 import "./collections.css";
+import "./runtime.css";
 import "./tour.css";
 
 createRoot(document.getElementById("root")!).render(

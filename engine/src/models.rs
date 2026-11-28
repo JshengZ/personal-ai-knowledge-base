@@ -15,6 +15,7 @@ use tokio::{process::Child, sync::Mutex};
 
 pub struct Models {
     client: Client,
+    remote_clients: Mutex<std::collections::HashMap<String,Client>>,
     credential_namespace: String,
     runtime: RuntimeConfig,
     local: Mutex<Option<LocalEmbedding>>,
@@ -38,10 +39,12 @@ impl Models {
     ) -> Result<Arc<Self>> {
         Ok(Arc::new(Self {
             client: Client::builder()
+                .no_proxy()
                 .redirect(Policy::none())
                 .connect_timeout(Duration::from_secs(10))
                 .timeout(Duration::from_secs(120))
                 .build()?,
+            remote_clients:Mutex::new(std::collections::HashMap::new()),
             credential_namespace,
             runtime,
             local: Mutex::new(None),
@@ -77,6 +80,7 @@ impl Models {
     }
 
     pub fn validate_provider(provider: &Provider) -> Result<()> {
+        if !["system","direct"].contains(&provider.proxy_mode.as_str()) {bail!("模型连接方式无效");}
         if provider.base_url.is_empty() {
             return Ok(());
         }
@@ -121,6 +125,20 @@ impl Models {
         Ok(format!("{base}/{suffix}"))
     }
 
+    async fn body(&self,mut response:reqwest::Response,limit:usize)->Result<(Vec<u8>,bool)> {
+        let mut bytes=Vec::new();
+        loop {
+            let mut read=Box::pin(response.chunk());
+            let chunk=loop {tokio::select! {
+                result=&mut read=>break result?,
+                _=tokio::time::sleep(Duration::from_millis(100))=>{if self.stopping.load(Ordering::SeqCst) {return Err(crate::errors::ServiceError::new("service_stopping","知识服务正在退出",axum::http::StatusCode::SERVICE_UNAVAILABLE).into());}}
+            }};
+            let Some(chunk)=chunk else {return Ok((bytes,false));};
+            if bytes.len()+chunk.len()>limit {let keep=limit.saturating_sub(bytes.len());bytes.extend_from_slice(&chunk[..keep]);return Ok((bytes,true));}
+            bytes.extend_from_slice(&chunk);
+        }
+    }
+
     async fn post(
         &self,
         kind: &str,
@@ -129,9 +147,17 @@ impl Models {
         payload: Value,
     ) -> Result<Value> {
         let key = self.key(kind, provider)?;
-        let mut request = self
-            .client
-            .post(Self::endpoint(provider, suffix)?)
+        let endpoint=Self::endpoint(provider,suffix)?;
+        let url=url::Url::parse(&endpoint)?;
+        let routes=crate::network::Routes::load();
+        let direct=provider.proxy_mode=="direct";
+        let cache_key=format!("{}:{}",provider.proxy_mode,routes.fingerprint());
+        let client={let mut clients=self.remote_clients.lock().await;if clients.len()>8 {clients.clear();}
+            if !clients.contains_key(&cache_key) {clients.insert(cache_key.clone(),routes.client(direct,&url)?);}
+            clients[&cache_key].clone()
+        };
+        let mut request = client
+            .post(&endpoint)
             .json(&payload);
         if !key.is_empty() {
             request = if provider.protocol == "anthropic" {
@@ -142,19 +168,28 @@ impl Models {
                 request.bearer_auth(&key)
             };
         }
-        let response = request
-            .send()
-            .await
-            .context("模型连接失败，请检查公司网络、API 地址和证书")?;
-        let status = response.status();
+        let response=loop {
+            if self.stopping.load(Ordering::SeqCst) {return Err(crate::errors::ServiceError::new("service_stopping","知识服务正在退出",axum::http::StatusCode::SERVICE_UNAVAILABLE).into());}
+            let mut send=Box::pin(request.send());
+            break loop {tokio::select! {
+                result=&mut send=>break result.map_err(|error| {
+                    let code=if error.is_timeout(){"upstream_timeout"}else if error.is_connect(){"upstream_connect_failed"}else{"upstream_transport_error"};
+                    crate::errors::ServiceError::new(code,format!("模型网络请求失败：{error}"),axum::http::StatusCode::BAD_GATEWAY).details(json!({"endpoint":endpoint,"network":routes.describe(direct,&url),"cause":error.to_string()}))
+                })?,
+                _=tokio::time::sleep(Duration::from_millis(100))=>{if self.stopping.load(Ordering::SeqCst) {return Err(crate::errors::ServiceError::new("service_stopping","知识服务正在退出",axum::http::StatusCode::SERVICE_UNAVAILABLE).into());}}
+            }};
+        };
+        let status=response.status();
         if !status.is_success() {
-            bail!(
-                "模型服务返回 HTTP {}，请检查接口路径、模型权限或服务额度",
-                status.as_u16()
-            );
+            let request_id=response.headers().get("x-request-id").or_else(||response.headers().get("request-id")).and_then(|value|value.to_str().ok()).unwrap_or_default().to_string();
+            let (bytes,body_limit)=self.body(response,16384).await?;
+            let body=String::from_utf8_lossy(&bytes).into_owned();
+            let redacted=if key.is_empty(){body}else{body.replace(&key,"[REDACTED]")};
+            let truncated=body_limit || redacted.chars().count()>4096;let body=redacted.chars().take(4096).collect::<String>();
+            return Err(crate::errors::ServiceError::new("upstream_http_error",format!("模型服务返回 HTTP {}：{}",status.as_u16(),body),axum::http::StatusCode::BAD_GATEWAY).details(json!({"http_status":status.as_u16(),"response_body":body,"body_truncated":truncated,"upstream_request_id":request_id,"endpoint":endpoint,"network":routes.describe(direct,&url)})).into());
         }
-        let bytes = response.bytes().await?;
-        if bytes.len() > 16 * 1024 * 1024 {
+        let (bytes,truncated)=self.body(response,16*1024*1024).await?;
+        if truncated {
             bail!("模型响应过大");
         }
         serde_json::from_slice(&bytes).context("模型返回内容不是有效的 JSON")

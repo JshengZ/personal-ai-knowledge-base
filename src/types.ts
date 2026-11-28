@@ -132,6 +132,7 @@ export interface Provider {
   protocol: string;
   has_key: boolean;
   endpoint: string;
+  proxy_mode?: "system" | "direct";
 }
 export interface Settings {
   schema_version: number;
@@ -147,6 +148,7 @@ export interface Settings {
   paused: boolean;
   max_file_mb: number;
   reconcile_seconds: number;
+  file_quiet_seconds?: number;
   min_free_disk_gb: number;
   max_index_gb: number;
   indexing_profile: "low" | "balanced" | "performance";

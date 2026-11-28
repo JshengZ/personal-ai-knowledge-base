@@ -14,16 +14,18 @@ A local-first desktop knowledge base that gives MCP agents access to your projec
 
 Light, dark and system appearance, custom accents, font sizes and density. [Appearance settings](docs/images/appearance.png) preview immediately and save locally.
 
+**1.1.0:** isolated query/FTS lanes, quiet-time incremental indexing, complete file-list pagination, headless MCP recovery, Windows proxy controls and a live runtime status panel. [Release details](docs/releases/v1.1.0.md).
+
 ## Download
 
-| Platform         | v1.0.2 installer                                                                                                                          | Status                                                    |
+| Platform         | v1.1.0 installer                                                                                                                          | Status                                                    |
 | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| macOS, Intel x64 | [Download DMG](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.2/Personal-Knowledge-1.0.2-mac-x64.dmg)       | Packaged application tested on macOS 14.6.1               |
-| Windows, x64     | [Download installer](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.2/Personal-Knowledge-1.0.2-win-x64.exe) | Native CI and target-environment status: see verification |
+| macOS, Intel x64 | [Download DMG](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.1.0/Personal-Knowledge-1.1.0-mac-x64.dmg)       | Packaged application tested on macOS 14.6.1               |
+| Windows, x64     | [Download installer](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.1.0/Personal-Knowledge-1.1.0-win-x64.exe) | Native CI and target-environment status: see verification |
 
-[All releases](https://github.com/JshengZ/personal-ai-knowledge-base/releases) · [Checksums](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.0.2/SHA256SUMS.txt) · [Release notes](CHANGELOG.md)
+[All releases](https://github.com/JshengZ/personal-ai-knowledge-base/releases) · [Checksums](https://github.com/JshengZ/personal-ai-knowledge-base/releases/download/v1.1.0/SHA256SUMS.txt) · [Release notes](CHANGELOG.md)
 
-Installers bundle the embedding model and English/Chinese OCR data, so downloads are approximately 800 MiB. Native Apple Silicon and ARM Windows installers are not included in v1.0.2. These installers are **unsigned**; macOS may require an explicit open authorization and Windows may display an unknown-publisher prompt. See the [installation guide](docs/user-guide.md).
+Installers bundle the embedding model and English/Chinese OCR data, so downloads are approximately 800 MiB. Native Apple Silicon and ARM Windows installers are not included in v1.1.0. These installers are **unsigned**; macOS may require an explicit open authorization and Windows may display an unknown-publisher prompt. See the [installation guide](docs/user-guide.md).
 
 ## Get started
 
@@ -32,7 +34,7 @@ First launch offers an optional, replayable guide on the real interface. New ins
 1. On macOS, open the DMG and drag **个人知识库** into Applications. On Windows, use the installer wizard to choose the program folder and install for the current user.
 2. On first launch, choose the knowledge data location (separate from the program folder), then view or skip the optional guide. Add a project or document folder from Sources.
 3. For answers and project summaries inside the app, enter your organization's model API URL, model name, and credentials in Settings. This is optional when your MCP agent already has its own chat model.
-4. Open **Agent 连接**, keep the default automatic scope or select specific projects, and select **一键配置 ZCode**. Existing ZCode settings are preserved and backed up. Other clients can use generated JSON, Codex TOML, or local Streamable HTTP settings.
+4. Open **Agent 连接**, explicitly choose automatic sharing or specific projects, and select **一键配置 ZCode**. Existing ZCode settings are preserved and backed up. Other clients can use generated JSON, Codex TOML, or local Streamable HTTP settings.
 5. Start a new agent conversation and ask a project question. Check that it calls the knowledge tools and cites the original sources.
 
 Files inside selected folders stay up to date after edits, renames, and deletions. Closing the window keeps indexing in the tray. Use the tray or app menu to quit. Each colleague installs their own independent knowledge base and chooses their own folders and credentials.
@@ -57,7 +59,7 @@ Screenshots show the actual Electron interface in an isolated empty library. Pat
 - **MCP as the primary interface:** stdio and Streamable HTTP; scoped project access, confirmed memories, and optional memory proposals.
 - **Named collections:** select multiple folders in one native dialog, name each independently, and filter a whole collection or an individual detected project.
 - **Automatic indexing:** filesystem notifications, persistent work queues, retries, reconciliation and explainable exclusions, including Nuitka outputs and already indexed noise.
-- **Automatic agent scope:** new connections include all shareable collections and future additions; existing selected scopes remain restricted until changed. Collection deletion immediately revokes retrieval and preserves project notes in the archive.
+- **Automatic agent scope:** choose the scope when creating a connection; automatic sharing includes future additions only after you select it. Existing authorizations are preserved. Collection deletion immediately revokes retrieval and preserves project notes in the archive.
 - **Hybrid RAG:** Chinese-aware full-text search, vector retrieval, reciprocal rank fusion, and optional API reranking.
 - **Traceable sources:** PDF pages, code lines, DOCX paragraphs, slides, spreadsheet cells, and document versions.
 - **Project workspace:** editable goals, approaches, decisions, and API-generated summaries with evidence.

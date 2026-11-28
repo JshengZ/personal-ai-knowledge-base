@@ -66,3 +66,10 @@ Sources for interaction patterns: [Fluent onboarding](https://fluent2.microsoft.
 独立子智能体检查 1200×820、640×520，包含批量部分失败重试、集合／项目切换、改名、自动／指定范围回显；提交期间整组表单禁用，避免失败项丢失。实际截图：[批量目录](docs/images/collections-batch.png)、[集合选单](docs/images/collections-scopes.png)、[自动共享](docs/images/collections-sharing.png)。合成资料只用于验收，不生成到用户新库。
 
 New collection controls reuse the established theme and sizing. Long folder forms keep their heading and actions visible while the middle scrolls. Independent acceptance checks constrained windows, partial retry, renamed scopes and saved sharing modes; the whole batch form is disabled during submission.
+
+## 1.1.0 资料与运行状态 / Library and runtime status
+
+- 206 个真实临时文件验证 100 → 200 → 205 条分页，后台新增后保持 206 条；一次读取失败保留列表并重试，筛选切换不混入旧范围，加载状态不冒充空库。
+- 状态面板默认折叠，沿用线条／字体／主题与间距；展开显示任务与队列，1440 px 双列、640 px 单列，未见横向溢出。
+- 新连接范围默认占位，未选择时禁用提交；指定项目初始为空，自动共享需明确选择。设置使用已有 Select 样式提供静默窗口和直连，导览说明同步更新。
+- Evidence: `docs/images/runtime-status.png`, `runtime-status-narrow.png`, `sharing-choice.png`, `model-network.png`, `indexing-policy.png`. Fixtures are synthetic and not installed sample data.

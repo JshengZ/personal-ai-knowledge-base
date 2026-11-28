@@ -9,7 +9,7 @@ Download your platform's installer from [GitHub Releases](https://github.com/Jsh
 - **Intel Mac:** open the `.dmg`, drag **个人知识库** to Applications, then launch it. If macOS blocks this unsigned build, use System Settings → Privacy & Security to authorize opening the app. No terminal command is required.
 - **Windows x64:** run the `.exe` wizard, choose the program directory (for example on D:), and install for the current user. It creates a shortcut. The build is unsigned and may display an unknown-publisher prompt. Managed workstations may require your organization's normal software authorization.
 
-The application bundles its runtime, local embedding model, fonts, and OCR languages. There is no project account to register. Native Apple Silicon and ARM Windows installers are not part of v1.0.2.
+The application bundles its runtime, local embedding model, fonts, and OCR languages. There is no project account to register. Native Apple Silicon and ARM Windows installers are not part of v1.1.0.
 
 ## Data location and upgrading
 
@@ -25,7 +25,7 @@ The bootstrap pointer and instance lock remain in the original per-user applicat
 
 By default, at least **5 GB** of free disk space is reserved and live index pages plus the database journal are limited to **10 GB**. SQLite pages freed by deletion are reusable and do not permanently consume this quota. Settings show live quota usage, physical file size, and reusable space separately. Excluded/deleted sources and removed folders are reclaimed in small background batches without deleting originals; already confirmed removals continue while discovery is paused. Database files generally do not shrink immediately after deletion, and actual disk free space remains protected. Migrate to another disk to move that physical occupation. An existing library is never deleted merely for exceeding its limit.
 
-When upgrading from v1.0.0 or v1.0.1, quit the tray application first. Install v1.0.2, choose/review storage, and start with **Full-text only** while reviewing a large folder. A manually created junction can remain; the engine resolves its physical path. Do not delete SQLite WAL/SHM files as a disk-cleaning shortcut.
+When upgrading from v1.0.x, quit the tray application first. Install v1.1.0, choose/review storage, and start with **Full-text only** while reviewing a large folder. A manually created junction can remain; the engine resolves its physical path. Do not delete SQLite WAL/SHM files as a disk-cleaning shortcut.
 
 ## First use and built-in guide
 
@@ -69,7 +69,7 @@ To restore an explicitly excluded input, remove its relative-path/glob rule and 
 
 Recognition uses known names and file markers; it cannot reliably identify every renamed/unknown tool output or infer all user preferences. Review the scope before indexing a broad folder. Dedicated Office parsers continue to accept DOCX/PPTX/XLSX even though those formats internally contain ZIP data.
 
-Upgrade associates legacy projects with their collections while preserving chunks, vectors and client tokens. Existing connections retain selected scopes; switch once to automatic sharing in **编辑权限 → 共享范围** to include future projects. This release advances the database to schema 2; use v1.0.2 or newer after upgrade, and export a backup beforehand.
+Upgrade associates legacy projects with their collections while preserving chunks, vectors and client tokens. Existing connections retain selected scopes; switch once to automatic sharing in **编辑权限 → 共享范围** to include future projects. This release advances the database to schema 3; use v1.1.0 or newer after upgrade, and export a backup beforehand.
 
 ## Model settings
 
@@ -98,7 +98,7 @@ The bundled CPU worker submits one chunk at a time, so a slow batch does not dis
 ## Connect an agent
 
 1. Open **Agent 连接 → 添加连接**.
-2. Choose the client. New connections default to all shareable collections and future additions. Select specific projects when required. Personal-memory reading and memory suggestions remain separate permissions.
+2. Choose the client. Explicitly choose a sharing scope. “自动共享（含后续新增资料）” includes future additions only after you select it; “指定项目” starts with no projects selected. Personal-memory reading and memory suggestions remain separate permissions.
 3. For ZCode, click **一键配置 ZCode**. Existing settings are preserved and backed up. For nonstandard installations, copy the generated settings into your client instead.
 4. For another client, copy the generated JSON, Codex TOML, or local HTTP settings into its MCP configuration UI.
 5. Start a new conversation. Ask: “What algorithm does my ranking project use? Call the knowledge tools and cite the original sources.”
@@ -149,3 +149,22 @@ Open **设置 → 个性化**. Light is the default; Dark and Follow system are 
 Settings are grouped into Appearance, Models and retrieval, Indexing and background, Storage and backup, and Activity. Switching settings tabs preserves unsaved model fields; model/index/storage changes still require their Save button. Each Save action applies only its own settings group and preserves drafts in other groups. Appearance saves independently. The sidebar reduces to labeled icon controls in narrow windows; use the icon tooltip or expand the window for full labels.
 
 ![Appearance controls](images/appearance.png)
+
+## Runtime status, quiet-time updates and diagnostics
+
+Expand **资料 → 运行状态** for the daemon version/PID, current scan/file/vector task, normal and reserved full-text query lanes, ready/waiting file jobs, next due time and vector progress. Full-text readiness is independent of vector completion.
+
+Native operating-system events drive incremental updates. New files settle briefly; existing files wait for **five minutes** without edits by default. Choose immediate or 1/5/10 minutes under **设置 → 索引与后台 → 修改后的静默时间**. Repeated saves coalesce, and unchanged chunks retain their vectors. Hourly reconciliation, startup, resume and watcher overflow recover missed events. High activity or 20+ projects in one collection prompts a scope review. Temporary, build and Agent cache directories are skipped by default; explicit inclusion can retain legitimate sources.
+
+The file list loads 100 entries per page. **加载更多** expands it; background refresh preserves the expanded count. A failed read keeps the last list and offers retry, rather than displaying an empty library. Changing filters starts at the first page. All index data remains local.
+
+All five MCP tools delegate to one shared daemon. Stdio initialization/discovery works before that daemon starts; the first tool call starts it without the GUI. Concurrent clients share one daemon. Quitting the tray stops the current service; a subsequent stdio call can restart it. HTTP clients require an already-running daemon. Each live session normally has a lightweight stdio bridge which exits with the session. Administrators can distinguish `--role service` and `--role mcp-stdio`, and use the status PID.
+
+Normal queries have an eight-second server budget and a 15-second bridge budget. Saturated normal lanes leave two reserved full-text lanes for search/context. Capacity, maintenance, connection, deadline and version failures have distinct codes. Memory proposals use a longer commit budget; individual clients may cancel earlier. An uncertain submission can be retried with identical arguments to reuse an existing pending proposal.
+
+**设置 → 模型与检索 → 连接方式** offers system routing or direct access. Windows reads the current user's static proxy/bypass settings, including `100.10*` and `<local>`, and supports proxy environment variables. Engine/local-model loopback traffic always goes directly. PAC execution is not supported; PAC-only settings produce an explicit instruction to select direct access or a fixed proxy. Model errors retain the HTTP status, bounded response body and request ID while redacting the configured API key.
+
+Activity records distinguish computation from transport completion/interruption. Transport completion means handed to the local transport, **not acknowledged by the Agent**; `client_acknowledged` is unknown. Dropped audit events are visible in runtime status.
+
+![Runtime status](images/runtime-status.png)
+![Explicit sharing choice](images/sharing-choice.png)

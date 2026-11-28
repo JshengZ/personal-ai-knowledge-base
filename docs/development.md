@@ -91,7 +91,7 @@ For organization-specific installers, set `PKB_COMPANY_CONFIG` to a JSON templat
 
 ## Release procedure
 
-1. Update versions in `package.json`, `package-lock.json`, `engine/Cargo.toml`, and `engine/Cargo.lock`, then update both languages and the changelog.
+1. Use `npm version <version> --no-git-tag-version`; its hook synchronizes Cargo and lockfiles from `package.json`. Run `npm run test:versions`, then update both languages and the changelog.
 2. Run CI and the platform-specific packaged smoke test. Keep validation claims tied to actual evidence.
 3. Rebuild installers and run both package audits. If signing identities are available, configure `CSC_LINK` and the signing provider's required secrets in the build environment; never commit them. Apple notarization requires separate platform validation.
 4. Generate SHA-256 checksums and public build metadata with `node scripts/release-info.mjs`.
@@ -105,3 +105,11 @@ The publication workflow rejects failed builds, modified binaries, mismatched pl
 Update third-party notices when dependencies change. `node scripts/collect-licenses.mjs` refreshes JavaScript records, including bundled UI dependencies; Rust license records must be updated alongside lockfile changes. Use only properly licensed contributions and preserve upstream notices.
 
 For an offline Electron packaging step, set `PKB_ELECTRON_DIST` to an unpacked Electron distribution or a directory containing the exact pinned `electron-v<version>-<platform>-<arch>.zip`. This uses a local runtime cache; it does not change the pinned Electron version.
+
+## 1.1.0 regression checks and version source
+
+`package.json` is the version source. `npm version <version> --no-git-tag-version` synchronizes desktop/Cargo locks; `npm run test:versions` validates them. Windows build.rs emits PE ProductVersion/FileVersion, verified against CLI/MCP/desktop by native package checks. Cross-building Windows on a Mac additionally requires a Windows resource compiler; published installers use native CI.
+
+`npm run test:runtime` exercises real cold/concurrent MCP clients, slow/idempotent writes, quiet-time events, gateway errors and quick shutdown. `npm run test:library` uses 206 actual temporary files to check pagination, transient failures, status and explicit scope selection. `node --test tests/local-http.test.mjs` checks direct loopback routing with environment proxies. Rust regressions include 23,000 synthetic metadata rows, writer/query saturation, job generations, partial-cleanup recovery and read-pool invalidation. Test homes are isolated synthetic libraries.
+
+UI tests intercept the IPC/HTTP boundary. Internal loopback now uses node:http, so replacing global fetch no longer intercepts it. `tests/ipc-requests.mjs` provides controlled failures and in-flight checks without a production test hook.

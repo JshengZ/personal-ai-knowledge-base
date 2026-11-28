@@ -95,3 +95,11 @@ node scripts/verify-package.mjs win
 发布流程会拒绝失败构建、被修改的安装包、两端版本不一致及已公开的同名版本；上方手工步骤仍可使用。依赖更新需同步第三方许可；JavaScript 清单可用 `collect-licenses.mjs` 更新，Rust 清单随 Cargo 锁文件维护。
 
 离线打包 Electron 时，可将 `PKB_ELECTRON_DIST` 指向已解压的 Electron，或包含固定版本 `electron-v<version>-<platform>-<arch>.zip` 的本地目录。此选项只使用缓存，不更改固定的 Electron 版本。
+
+## 1.1.0 回归与版本源
+
+`package.json` 是版本源，使用 `npm version <version> --no-git-tag-version` 同步桌面锁文件与 Cargo；`npm run test:versions` 校验。Windows 引擎 build.rs 写入 PE ProductVersion／FileVersion，原生包审计检查其与 CLI／MCP／桌面一致。Mac 交叉构建 Windows 时还需可用的 Windows resource compiler；正式安装包使用目标系统原生 CI。
+
+新增 `npm run test:runtime` 验证真实服务冷启动、并发 stdio、慢写／幂等、静默窗口、原生事件、网关错误与快速退出；`npm run test:library` 用 206 个真实临时文件验收分页、刷新失败恢复、状态和范围选择；`node --test tests/local-http.test.mjs` 验证代理环境下的回环直连。Rust 回归含 2.3 万条合成元数据分页、写锁／查询通道争用、代际、部分清理恢复和读池失效。所有测试使用隔离合成库。
+
+测试拦截点在 IPC／HTTP 边界：桌面内部回环使用 node:http，替换 global fetch 不会再拦截它。`tests/ipc-requests.mjs` 用于受控界面失败和在途操作；生产代码没有测试后门。

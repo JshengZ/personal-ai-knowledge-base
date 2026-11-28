@@ -1,4 +1,5 @@
 import test from "node:test";
+import { interceptRequests } from "./ipc-requests.mjs";
 import assert from "node:assert/strict";
 import {
   mkdtemp,
@@ -103,12 +104,14 @@ test(
         );
       await api("PATCH", "/settings", {
         embedding_mode: "disabled",
+        file_quiet_seconds: 0,
         auto_summarize: false,
       });
       // This connection predates every collection and project below.
       const config = await api("POST", "/connections", {
         name: "Dynamic scope agent",
         kind: "other",
+        scope_mode: "all",
       });
       assert.equal(config.connection.scope_mode, "all");
       client = new Client({ name: "collections-acceptance", version: "1.0.2" });
@@ -176,18 +179,18 @@ test(
         "long form retains a visible action footer",
       );
       await app.evaluate(() => {
-        const original = globalThis.fetch;
         globalThis.__collectionBatchPending = false;
-        globalThis.fetch = async (...args) => {
-          if (String(args[0]).endsWith("/api/roots/batch")) {
-            globalThis.__collectionBatchPending = true;
-            await new Promise((resolve) => {
-              globalThis.__releaseCollectionBatch = resolve;
-            });
-            globalThis.fetch = original;
-          }
-          return original(...args);
-        };
+        globalThis.__collectionBatchHeldOnce = false;
+      });
+      await interceptRequests(app, async ({ path }, next) => {
+        if (path === "/roots/batch" && !globalThis.__collectionBatchHeldOnce) {
+          globalThis.__collectionBatchHeldOnce = true;
+          globalThis.__collectionBatchPending = true;
+          await new Promise((resolve) => {
+            globalThis.__releaseCollectionBatch = resolve;
+          });
+        }
+        return next();
       });
       await dialog
         .getByRole("button", { name: "加入知识库", exact: true })
@@ -468,6 +471,9 @@ test(
           shots,
       );
     } finally {
+      await app
+        .evaluate(() => globalThis.__releaseCollectionBatch?.())
+        .catch(() => {});
       if (client) await client.close();
       await app.close();
       await until(

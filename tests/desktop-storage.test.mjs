@@ -1,4 +1,5 @@
 import test from "node:test";
+import { interceptRequests } from "./ipc-requests.mjs";
 import assert from "node:assert/strict";
 import {
   mkdtemp,
@@ -80,6 +81,7 @@ test(
       await api("PATCH", "/settings", {
         onboarding_complete: true,
         embedding_mode: "disabled",
+        file_quiet_seconds: 0,
       });
       await api("POST", "/roots", { path: sources, policy: "agents" });
       await until(async () => {
@@ -207,26 +209,18 @@ test(
         .first()
         .fill("audit-draft-not-a-real-key");
       await app.evaluate(() => {
-        const originalFetch = globalThis.fetch;
         globalThis.__pkbSecretWrites = 0;
-        globalThis.fetch = async (input, options) => {
-          if (String(input).endsWith("/api/settings") && options?.body) {
-            const patch = JSON.parse(options.body);
-            if (patch.keys && Object.hasOwn(patch.keys, "chat")) {
-              globalThis.__pkbSecretWrites++;
-              return new Response(
-                JSON.stringify({
-                  error: "Test blocked an unintended credential write",
-                }),
-                {
-                  status: 400,
-                  headers: { "Content-Type": "application/json" },
-                },
-              );
-            }
-          }
-          return originalFetch(input, options);
-        };
+      });
+      await interceptRequests(app, async ({ path, body }, next) => {
+        if (
+          path === "/settings" &&
+          body?.keys &&
+          Object.hasOwn(body.keys, "chat")
+        ) {
+          globalThis.__pkbSecretWrites++;
+          throw new Error("Test blocked an unintended credential write");
+        }
+        return next();
       });
       await page.getByRole("tab", { name: "存储与备份", exact: true }).click();
       await page.getByLabel("索引容量上限（GB）", { exact: true }).fill("11");
@@ -339,13 +333,21 @@ test(
         density: "compact",
         sidebar_collapsed: true,
       });
-      await app.evaluate(({ app, dialog }) => {
-        const originalFetch = globalThis.fetch;
+      await app.evaluate(async ({ app, dialog }) => {
+        const http = process.getBuiltinModule("http");
+        const originalRequest = http.request;
         globalThis.__pkbMigrationQuitNotices = 0;
-        globalThis.fetch = async (input, options) => {
-          if (String(input).endsWith("/api/shutdown"))
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-          return originalFetch(input, options);
+        http.request = (...args) => {
+          const request = originalRequest(...args);
+          if (String(args[0]).endsWith("/api/shutdown")) {
+            http.request = originalRequest;
+            const end = request.end.bind(request);
+            request.end = (...values) => {
+              setTimeout(() => end(...values), 1000);
+              return request;
+            };
+          }
+          return request;
         };
         dialog.showMessageBox = async (options) => {
           if (options.title === "正在迁移数据")

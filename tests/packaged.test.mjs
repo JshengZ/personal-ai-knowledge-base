@@ -243,7 +243,11 @@ test(
       await dialog
         .getByLabel("共享范围", { exact: true })
         .selectOption("selected");
-      await dialog.getByLabel("推荐排序", { exact: true }).uncheck();
+      assert.equal(
+        await dialog.getByLabel("推荐排序", { exact: true }).isChecked(),
+        false,
+      );
+      await dialog.getByLabel("订单校验", { exact: true }).check();
       assert.ok(
         await dialog.getByLabel("订单校验", { exact: true }).isChecked(),
       );

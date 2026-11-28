@@ -37,19 +37,26 @@ jobs:
       - run: npm ci
       - name: Prepare local OCR resources
         run: npm run assets -- --small-only
+      - run: npm run test:versions
       - run: npm run check
       - run: npm run build:web
       - run: npm run build:desktop
       - run: cargo build --locked --manifest-path engine/Cargo.toml
       - run: npm test
+      - name: Desktop loopback ignores corporate proxies
+        run: node --test tests/local-http.test.mjs
       - name: Release artifact provenance and integrity
         run: node --test tests/release.test.mjs
       - run: npm run test:integration
       - name: MCP handshake, busy fallback, migration and worker cleanup
         run: npm run test:resilience
+      - name: Headless MCP, quiet-time indexing, slow writes and gateway diagnostics
+        run: npm run test:runtime
       - name: Desktop storage migration GUI
         run: npm run test:desktop
       - name: Optional first-run guide and replay
         run: npm run test:onboarding
+      - name: Library pagination, recoverable failures and runtime controls
+        run: npm run test:library
       - name: Named collections, multiselect, adaptive rules and automatic MCP scope
         run: npm run test:collections
